@@ -252,10 +252,12 @@ int main(int argc, char** argv) {
 	mInputMapDeinit(&renderer.core->inputMap);
 
 	mSDLDeinit(&renderer);
-	mAndroidLinkCableDestroy(sLinkCable);
-	mPeerLinkDestroy(sPeerLink);
+	struct mAndroidLinkCable* linkCable = sLinkCable;
+	struct mPeerLink* peerLink = sPeerLink;
 	sLinkCable = NULL;
 	sPeerLink = NULL;
+	mAndroidLinkCableDestroy(linkCable);
+	mPeerLinkDestroy(peerLink);
 	mStandardLoggerDeinit(&_logger);
 
 	mArgumentsDeinit(&args);
