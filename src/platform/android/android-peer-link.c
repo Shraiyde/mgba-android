@@ -281,6 +281,8 @@ bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, c
 	link->address = strdup(address);
 	if (!link->address) return false;
 	memcpy(link->pin, pin, MPEER_PIN_LENGTH + 1);
+	link->sioPending = false;
+	link->sendSequence = 0;
 	atomic_store(&link->running, true);
 	if (pthread_create(&link->thread, NULL, _peerThread, link) != 0) {
 		atomic_store(&link->running, false);
