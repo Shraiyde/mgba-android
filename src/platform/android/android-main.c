@@ -31,6 +31,37 @@ static struct mAndroidLinkCable* sLinkCable;
 
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
+#define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
+#define HNS_COOP_MAILBOX_SIZE 16
+#define GBA_EWRAM_START 0x02000000
+#define GBA_EWRAM_END 0x02040000
+
+static uint32_t sCoopMailboxAddress;
+static uint32_t sCoopMailboxNextScan;
+
+static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
+	if (!core || !core->busRead32 || !core->busRead16 || !core->busWrite32)
+		return;
+
+	uint32_t frame = core->frameCounter ? core->frameCounter(core) : 0;
+	if (!sCoopMailboxAddress && frame >= sCoopMailboxNextScan) {
+		sCoopMailboxNextScan = frame + 30;
+		uint32_t address;
+		for (address = GBA_EWRAM_START; address + HNS_COOP_MAILBOX_SIZE <= GBA_EWRAM_END; address += 4) {
+			if (core->busRead32(core, address) == HNS_COOP_MAILBOX_MAGIC
+				&& core->busRead16(core, address + 4) == 1
+				&& core->busRead16(core, address + 6) == HNS_COOP_MAILBOX_SIZE) {
+				sCoopMailboxAddress = address;
+				break;
+			}
+		}
+	}
+
+	if (sCoopMailboxAddress) {
+		core->busWrite32(core, sCoopMailboxAddress + 8, mPeerLinkIsConnected(sPeerLink) ? 1 : 0);
+	}
+}
+
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	struct mCoreThread* context = user;
 	SDL_Event event;
@@ -65,6 +96,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, stride / BYTES_PER_PIXEL);
 		}
 		mCoreSyncWaitFrameEnd(&context->impl->sync);
+		mSDLAndroidUpdateCoopMailbox(renderer->core);
 	}
 }
 
@@ -215,6 +247,8 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	struct mCoreThread thread = {
 		.core = renderer->core
 	};
+	sCoopMailboxAddress = 0;
+	sCoopMailboxNextScan = 0;
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
 		return 1;
 	}
