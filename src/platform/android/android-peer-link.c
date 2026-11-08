@@ -274,7 +274,10 @@ bool mPeerLinkHost(struct mPeerLink* link, uint16_t port, const char* pin) {
 	link->host = true;
 	link->port = port ? port : MPEER_DEFAULT_PORT;
 	memcpy(link->pin, pin, MPEER_PIN_LENGTH + 1);
-	link->sioPending = false;
+	link->sioQueueRead = 0;
+	link->sioQueueWrite = 0;
+	link->sioQueueCount = 0;
+	link->sioQueueOverflow = false;
 	link->sendSequence = 0;
 	atomic_store(&link->running, true);
 	if (pthread_create(&link->thread, NULL, _peerThread, link) != 0) {
@@ -292,7 +295,10 @@ bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, c
 	link->address = strdup(address);
 	if (!link->address) return false;
 	memcpy(link->pin, pin, MPEER_PIN_LENGTH + 1);
-	link->sioPending = false;
+	link->sioQueueRead = 0;
+	link->sioQueueWrite = 0;
+	link->sioQueueCount = 0;
+	link->sioQueueOverflow = false;
 	link->sendSequence = 0;
 	atomic_store(&link->running, true);
 	if (pthread_create(&link->thread, NULL, _peerThread, link) != 0) {
