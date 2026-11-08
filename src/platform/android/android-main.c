@@ -35,8 +35,8 @@ static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
 #define HNS_COOP_MAILBOX_VERSION 2
-#define HNS_COOP_MAILBOX_SIZE 544
-#define HNS_COOP_FLAG_QUEUE_SIZE 64
+#define HNS_COOP_MAILBOX_SIZE 1056
+#define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define GBA_EWRAM_START 0x02000000
 #define GBA_EWRAM_END 0x02040000
 
@@ -111,7 +111,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				uint32_t incomingRead = core->busRead32(core, sCoopMailboxAddress + 28);
 				if (incomingWrite - incomingRead >= HNS_COOP_FLAG_QUEUE_SIZE)
 					continue;
-				core->busWrite32(core, sCoopMailboxAddress + 288 + (incomingWrite % HNS_COOP_FLAG_QUEUE_SIZE) * 4, packed);
+				core->busWrite32(core, sCoopMailboxAddress + 544 + (incomingWrite % HNS_COOP_FLAG_QUEUE_SIZE) * 4, packed);
 				core->busWrite32(core, sCoopMailboxAddress + 24, incomingWrite + 1);
 			}
 		}
