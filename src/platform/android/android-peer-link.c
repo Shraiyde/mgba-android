@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #define PEER_MAGIC 0x4D504C4BU
@@ -36,6 +37,7 @@ struct mPeerLink {
 	pthread_t thread;
 	pthread_mutex_t lock;
 	pthread_mutex_t sendLock;
+	pthread_cond_t sioCond;
 	atomic_bool running;
 	atomic_bool connected;
 	int socketFd;
@@ -46,6 +48,8 @@ struct mPeerLink {
 	bool threadStarted;
 	char pin[MPEER_PIN_LENGTH + 1];
 	uint32_t sendSequence;
+	bool sioPending;
+	uint16_t sioValue;
 	struct mPeerEvent queue[PEER_QUEUE_CAPACITY];
 	size_t queueRead;
 	size_t queueWrite;
@@ -214,7 +218,17 @@ static void* _peerThread(void* opaque) {
 		uint32_t size;
 		uint8_t payload[MPEER_MAX_PAYLOAD];
 		if (!_receiveFrame(fd, &type, payload, &size)) break;
-		_queueEvent(link, mPEER_EVENT_MESSAGE, type, payload, size, 0);
+		if (type == mPEER_MSG_SIO_MULTI && size == sizeof(uint16_t)) {
+			uint16_t value;
+			memcpy(&value, payload, sizeof(value));
+			pthread_mutex_lock(&link->lock);
+			link->sioValue = ntohs(value);
+			link->sioPending = true;
+			pthread_cond_broadcast(&link->sioCond);
+			pthread_mutex_unlock(&link->lock);
+		} else {
+			_queueEvent(link, mPEER_EVENT_MESSAGE, type, payload, size, 0);
+		}
 	}
 done:
 	atomic_store(&link->connected, false);
@@ -234,6 +248,7 @@ struct mPeerLink* mPeerLinkCreate(void) {
 	if (!link) return NULL;
 	pthread_mutex_init(&link->lock, NULL);
 	pthread_mutex_init(&link->sendLock, NULL);
+	pthread_cond_init(&link->sioCond, NULL);
 	link->socketFd = -1;
 	link->listenFd = -1;
 	return link;
@@ -299,9 +314,33 @@ bool mPeerLinkIsConnected(struct mPeerLink* link) {
 	return link && atomic_load(&link->connected);
 }
 
+bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t* remoteValue) {
+	if (!link || !remoteValue || !atomic_load(&link->connected)) return false;
+	uint16_t payload = htons(localValue);
+	if (!mPeerLinkSend(link, mPEER_MSG_SIO_MULTI, &payload, sizeof(payload))) return false;
+
+	struct timespec deadline;
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_sec += 10;
+	pthread_mutex_lock(&link->lock);
+	int waitResult = 0;
+	while (!link->sioPending && atomic_load(&link->running) && waitResult != ETIMEDOUT)
+		waitResult = pthread_cond_timedwait(&link->sioCond, &link->lock, &deadline);
+	bool received = link->sioPending;
+	if (received) {
+		*remoteValue = link->sioValue;
+		link->sioPending = false;
+	}
+	pthread_mutex_unlock(&link->lock);
+	return received;
+}
+
 void mPeerLinkStop(struct mPeerLink* link) {
 	if (!link || !link->threadStarted) return;
 	atomic_store(&link->running, false);
+	pthread_mutex_lock(&link->lock);
+	pthread_cond_broadcast(&link->sioCond);
+	pthread_mutex_unlock(&link->lock);
 	if (link->socketFd >= 0) shutdown(link->socketFd, SHUT_RDWR);
 	if (link->listenFd >= 0) shutdown(link->listenFd, SHUT_RDWR);
 	pthread_join(link->thread, NULL);
@@ -315,6 +354,7 @@ void mPeerLinkStop(struct mPeerLink* link) {
 void mPeerLinkDestroy(struct mPeerLink* link) {
 	if (!link) return;
 	mPeerLinkStop(link);
+	pthread_cond_destroy(&link->sioCond);
 	pthread_mutex_destroy(&link->sendLock);
 	pthread_mutex_destroy(&link->lock);
 	free(link);
