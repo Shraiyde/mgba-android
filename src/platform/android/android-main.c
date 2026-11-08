@@ -9,6 +9,7 @@
 #include "android-ui.h"
 #include "android-peer-link.h"
 #include "android-link-cable.h"
+#include "android-peer-jni.h"
 
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
@@ -38,6 +39,26 @@ static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 static uint32_t sCoopMailboxAddress;
 static uint32_t sCoopMailboxNextScan;
+
+void mAndroidPeerLinkSetConnected(bool host) {
+	if (sPeerLink) {
+		mPeerLinkSetHostRole(sPeerLink, host);
+		mPeerLinkSetConnected(sPeerLink, true);
+	}
+	if (sLinkCable)
+		mAndroidLinkCableSetRole(sLinkCable, host);
+}
+
+void mAndroidPeerLinkSetDisconnected(void) {
+	if (sPeerLink)
+		mPeerLinkSetConnected(sPeerLink, false);
+}
+
+void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
+	if (sPeerLink)
+		mPeerLinkReceiveFrame(sPeerLink, frame, size);
+}
+
 
 static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	if (!core || !core->busRead32 || !core->busRead16 || !core->busWrite32)
@@ -222,8 +243,10 @@ int main(int argc, char** argv) {
 #endif
 
 	sPeerLink = mPeerLinkCreate();
-	if (sPeerLink)
+	if (sPeerLink) {
+		mPeerLinkUseJavaTransport(sPeerLink, true);
 		sLinkCable = mAndroidLinkCableCreate(sPeerLink, true);
+	}
 	int ret = mSDLRun(&renderer, &args);
 	mSDLDetachPlayer(&renderer.events, &renderer.player);
 	mInputMapDeinit(&renderer.core->inputMap);
@@ -254,6 +277,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	}
 	if (sLinkCable)
 		mAndroidLinkCableAttach(renderer->core, sLinkCable);
+	mAndroidPeerJniShowDialog();
 	mCoreAutoloadSave(renderer->core);
 	mArgumentsApplyFileLoads(args, renderer->core);
 
