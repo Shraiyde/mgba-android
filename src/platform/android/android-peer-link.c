@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "android-peer-link.h"
+#include "android-peer-jni.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -46,6 +47,7 @@ struct mPeerLink {
 	char* address;
 	uint16_t port;
 	bool threadStarted;
+	bool javaTransport;
 	char pin[MPEER_PIN_LENGTH + 1];
 	uint32_t sendSequence;
 	uint16_t sioQueue[32];
@@ -135,6 +137,25 @@ static void _queueEvent(struct mPeerLink* link, enum mPeerEventType type, uint16
 	pthread_mutex_unlock(&link->lock);
 }
 
+static void _processPayload(struct mPeerLink* link, uint16_t type, const uint8_t* payload, uint32_t size) {
+	if (type == mPEER_MSG_SIO_MULTI && size == sizeof(uint16_t)) {
+		uint16_t value;
+		memcpy(&value, payload, sizeof(value));
+		pthread_mutex_lock(&link->lock);
+		if (link->sioQueueCount < 32) {
+			link->sioQueue[link->sioQueueWrite] = ntohs(value);
+			link->sioQueueWrite = (link->sioQueueWrite + 1) % 32;
+			++link->sioQueueCount;
+		} else {
+			link->sioQueueOverflow = true;
+		}
+		pthread_cond_broadcast(&link->sioCond);
+		pthread_mutex_unlock(&link->lock);
+	} else {
+		_queueEvent(link, mPEER_EVENT_MESSAGE, type, payload, size, 0);
+	}
+}
+
 static int _createListener(uint16_t port) {
 	int fd = socket(AF_INET6, SOCK_STREAM, 0);
 	if (fd < 0) return -1;
@@ -221,22 +242,7 @@ static void* _peerThread(void* opaque) {
 		uint32_t size;
 		uint8_t payload[MPEER_MAX_PAYLOAD];
 		if (!_receiveFrame(fd, &type, payload, &size)) break;
-		if (type == mPEER_MSG_SIO_MULTI && size == sizeof(uint16_t)) {
-			uint16_t value;
-			memcpy(&value, payload, sizeof(value));
-			pthread_mutex_lock(&link->lock);
-			if (link->sioQueueCount < 32) {
-				link->sioQueue[link->sioQueueWrite] = ntohs(value);
-				link->sioQueueWrite = (link->sioQueueWrite + 1) % 32;
-				++link->sioQueueCount;
-			} else {
-				link->sioQueueOverflow = true;
-			}
-			pthread_cond_broadcast(&link->sioCond);
-			pthread_mutex_unlock(&link->lock);
-		} else {
-			_queueEvent(link, mPEER_EVENT_MESSAGE, type, payload, size, 0);
-		}
+		_processPayload(link, type, payload, size);
 	}
 done:
 	atomic_store(&link->connected, false);
@@ -315,10 +321,26 @@ bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, c
 bool mPeerLinkSend(struct mPeerLink* link, uint16_t type, const void* data, uint32_t size) {
 	if (!link || !atomic_load(&link->connected) || size > MPEER_MAX_PAYLOAD || (size && !data)) return false;
 	pthread_mutex_lock(&link->sendLock);
-	int fd = link->socketFd;
-	bool ok = fd >= 0 && _sendFrame(link, fd, type, data, size);
+	bool ok = false;
+	if (link->javaTransport) {
+		struct PeerFrameHeader header;
+		uint8_t frame[sizeof(header) + MPEER_MAX_PAYLOAD];
+		header.magic = htonl(PEER_MAGIC);
+		header.version = htons(PEER_VERSION);
+		header.type = htons(type);
+		header.length = htonl(size);
+		header.sequence = htonl(++link->sendSequence);
+		memcpy(frame, &header, sizeof(header));
+		if (size)
+			memcpy(frame + sizeof(header), data, size);
+		ok = mAndroidPeerJniSendFrame(frame, sizeof(header) + size);
+	} else {
+		int fd = link->socketFd;
+		ok = fd >= 0 && _sendFrame(link, fd, type, data, size);
+		if (!ok && fd >= 0)
+			shutdown(fd, SHUT_RDWR);
+	}
 	pthread_mutex_unlock(&link->sendLock);
-	if (!ok && fd >= 0) shutdown(fd, SHUT_RDWR);
 	return ok;
 }
 
@@ -363,11 +385,18 @@ bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t*
 }
 
 void mPeerLinkStop(struct mPeerLink* link) {
-	if (!link || !link->threadStarted) return;
+	if (!link) return;
 	atomic_store(&link->running, false);
+	atomic_store(&link->connected, false);
 	pthread_mutex_lock(&link->lock);
+	link->sioQueueRead = 0;
+	link->sioQueueWrite = 0;
+	link->sioQueueCount = 0;
+	link->sioQueueOverflow = false;
 	pthread_cond_broadcast(&link->sioCond);
 	pthread_mutex_unlock(&link->lock);
+	if (!link->threadStarted)
+		return;
 	if (link->socketFd >= 0) shutdown(link->socketFd, SHUT_RDWR);
 	if (link->listenFd >= 0) shutdown(link->listenFd, SHUT_RDWR);
 	pthread_join(link->thread, NULL);
@@ -376,6 +405,51 @@ void mPeerLinkStop(struct mPeerLink* link) {
 	link->listenFd = -1;
 	free(link->address);
 	link->address = NULL;
+}
+
+void mPeerLinkUseJavaTransport(struct mPeerLink* link, bool enabled) {
+	if (link)
+		link->javaTransport = enabled;
+}
+
+void mPeerLinkSetConnected(struct mPeerLink* link, bool connected) {
+	if (!link)
+		return;
+	bool wasConnected = atomic_load(&link->connected);
+	atomic_store(&link->running, connected);
+	atomic_store(&link->connected, connected);
+	pthread_mutex_lock(&link->lock);
+	if (!connected) {
+		link->sioQueueRead = 0;
+		link->sioQueueWrite = 0;
+		link->sioQueueCount = 0;
+		link->sioQueueOverflow = false;
+		pthread_cond_broadcast(&link->sioCond);
+	}
+	pthread_mutex_unlock(&link->lock);
+	if (connected && !wasConnected)
+		_queueEvent(link, mPEER_EVENT_CONNECTED, 0, NULL, 0, 0);
+	else if (!connected && wasConnected)
+		_queueEvent(link, mPEER_EVENT_DISCONNECTED, 0, NULL, 0, 0);
+}
+
+void mPeerLinkSetHostRole(struct mPeerLink* link, bool host) {
+	if (link)
+		link->host = host;
+}
+
+bool mPeerLinkReceiveFrame(struct mPeerLink* link, const uint8_t* frame, size_t size) {
+	if (!link || !frame || size < sizeof(struct PeerFrameHeader))
+		return false;
+	struct PeerFrameHeader header;
+	memcpy(&header, frame, sizeof(header));
+	if (ntohl(header.magic) != PEER_MAGIC || ntohs(header.version) != PEER_VERSION)
+		return false;
+	uint32_t payloadSize = ntohl(header.length);
+	if (payloadSize > MPEER_MAX_PAYLOAD || size != sizeof(header) + payloadSize)
+		return false;
+	_processPayload(link, ntohs(header.type), frame + sizeof(header), payloadSize);
+	return true;
 }
 
 void mPeerLinkDestroy(struct mPeerLink* link) {
