@@ -78,9 +78,6 @@ static void mSDLDeinit(struct mSDLRenderer* renderer) {
 
 int main(int argc, char** argv) {
 	struct mSDLRenderer renderer = {0};
-	sPeerLink = mPeerLinkCreate();
-	if (sPeerLink)
-		sLinkCable = mAndroidLinkCableCreate(sPeerLink, true);
 
 	struct mCoreOptions opts = {
 		.useBios = true,
@@ -192,6 +189,9 @@ int main(int argc, char** argv) {
 	renderer.core->setPeripheral(renderer.core, mPERIPH_RUMBLE, &renderer.player.rumble.d.d);
 #endif
 
+	sPeerLink = mPeerLinkCreate();
+	if (sPeerLink)
+		sLinkCable = mAndroidLinkCableCreate(sPeerLink, true);
 	int ret = mSDLRun(&renderer, &args);
 	mSDLDetachPlayer(&renderer.events, &renderer.player);
 	mInputMapDeinit(&renderer.core->inputMap);
