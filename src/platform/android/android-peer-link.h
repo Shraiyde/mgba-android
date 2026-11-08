@@ -55,5 +55,9 @@ bool mPeerLinkPoll(struct mPeerLink* link, struct mPeerEvent* event);
 bool mPeerLinkIsConnected(struct mPeerLink* link);
 bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t* remoteValue);
 void mPeerLinkStop(struct mPeerLink* link);
+void mPeerLinkUseJavaTransport(struct mPeerLink* link, bool enabled);
+void mPeerLinkSetConnected(struct mPeerLink* link, bool connected);
+void mPeerLinkSetHostRole(struct mPeerLink* link, bool host);
+bool mPeerLinkReceiveFrame(struct mPeerLink* link, const uint8_t* frame, size_t size);
 
 #endif
