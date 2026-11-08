@@ -41,6 +41,7 @@ struct mPeerLink {
 	int socketFd;
 	int listenFd;
 	bool host;
+	const char* address;
 	uint16_t port;
 	char pin[MPEER_PIN_LENGTH + 1];
 	uint32_t sendSequence;
