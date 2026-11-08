@@ -2,6 +2,8 @@ package org.libsdl.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.os.Handler;
+import android.os.Looper;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.text.InputFilter;
@@ -72,6 +74,15 @@ public final class PeerLinkManager {
     private static boolean webRtcInitialized;
 
     private final SecureRandom random = new SecureRandom();
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable roomHeartbeat = new Runnable() {
+        @Override public void run() {
+            if (host && mqttConnected) {
+                publishRoomAdvertisement();
+                handler.postDelayed(this, 10000);
+            }
+        }
+    };
     private final AtomicLong sendCounter = new AtomicLong(1);
     private final long[] receiveCounters = new long[] {0, 0};
     private final List<IceCandidate> pendingCandidates = new ArrayList<>();
@@ -224,9 +235,6 @@ public final class PeerLinkManager {
                     if (host) {
                         subscribe(toHostTopic(), relayHostTopic());
                         publishRoomAdvertisement();
-                    } else if (sessionId != null) {
-                        subscribe(toJoinTopic(), relayJoinTopic());
-                        publishJoinMessage();
                     } else {
                         subscribe(roomTopic());
                     }
@@ -342,11 +350,11 @@ public final class PeerLinkManager {
             return;
         }
 
-        if (!incomingSession.equals(sessionId) || !incomingPublicKey.equals(hostPublicKey)) {
-            resetPeerConnection();
-            accepted = false;
-            sessionKey = null;
-        }
+        if (accepted && incomingSession.equals(sessionId) && incomingPublicKey.equals(hostPublicKey))
+            return;
+        resetPeerConnection();
+        accepted = false;
+        sessionKey = null;
         sessionId = incomingSession;
         salt = incomingSalt;
         hostPublicKey = incomingPublicKey;
@@ -566,7 +574,8 @@ public final class PeerLinkManager {
         try {
             byte[] encrypted = encryptFrame(frame);
             if (directConnected && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {
-                return dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true));
+                if (dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true)))
+                    return true;
             }
             if (mqttConnected) {
                 publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 1, false);
@@ -715,8 +724,20 @@ public final class PeerLinkManager {
         return MessageDigest.isEqual(a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8));
     }
 
+    private void resetPeerConnection() {
+        try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
+        try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
+        peerConnection = null;
+        dataChannel = null;
+        directConnected = false;
+        pendingCandidates.clear();
+        sendCounter.set(1);
+        receiveCounters[0] = receiveCounters[1] = 0;
+    }
+
     private void closeCurrentSession(boolean clearPreferences) {
         boolean wasConnected = nativeConnected;
+        handler.removeCallbacks(roomHeartbeat);
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
         try { if (mqtt != null && mqtt.isConnected()) mqtt.disconnect(); } catch (Exception ignored) {}
