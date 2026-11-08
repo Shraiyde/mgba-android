@@ -232,6 +232,9 @@ static void* _peerThread(void* opaque) {
 	}
 done:
 	atomic_store(&link->connected, false);
+	pthread_mutex_lock(&link->lock);
+	pthread_cond_broadcast(&link->sioCond);
+	pthread_mutex_unlock(&link->lock);
 	if (fd >= 0) close(fd);
 	link->socketFd = -1;
 	if (link->listenFd >= 0) {
