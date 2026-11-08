@@ -292,7 +292,9 @@ public final class PeerLinkManager {
             advert.put("pub", hostPublicKey);
             advert.put("proof", hmacText(pinKey, sessionId + "|" + hostPublicKey));
             advert.put("timestamp", System.currentTimeMillis());
-            publish(roomTopic(), advert.toString().getBytes(StandardCharsets.UTF_8), 1, true);
+            publishRoomAdvertisement();
+                handler.removeCallbacks(roomHeartbeat);
+                handler.postDelayed(roomHeartbeat, 10000);
         } catch (Exception ignored) {}
     }
 
