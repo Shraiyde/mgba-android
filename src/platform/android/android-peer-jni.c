@@ -24,7 +24,7 @@ static JNIEnv* _getEnv(bool* attached) {
         return env;
     if (result != JNI_EDETACHED)
         return NULL;
-    if ((*sJavaVM)->AttachCurrentThread(sJavaVM, &env, NULL) != JNI_OK)
+    if ((*sJavaVM)->AttachCurrentThread(sJavaVM, (void**) &env, NULL) != JNI_OK)
         return NULL;
     *attached = true;
     return env;
