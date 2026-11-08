@@ -455,8 +455,9 @@ public final class PeerLinkManager {
             peerConnection = factory.createPeerConnection(config, new PeerConnection.Observer() {
                 @Override public void onSignalingChange(PeerConnection.SignalingState state) {}
                 @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
-                    directConnected = state == PeerConnection.IceConnectionState.CONNECTED
+                    boolean iceReady = state == PeerConnection.IceConnectionState.CONNECTED
                         || state == PeerConnection.IceConnectionState.COMPLETED;
+                    directConnected = iceReady && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN;
                     updateNativeConnection();
                     if (directConnected)
                         showStatus("Connected directly", "Phone-to-phone connection is active.");
