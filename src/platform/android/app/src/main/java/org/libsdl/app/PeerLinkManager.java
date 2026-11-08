@@ -101,6 +101,7 @@ public final class PeerLinkManager {
     private String relayJoinTopic;
     private boolean host;
     private boolean mqttConnected;
+    private boolean retryEnabled;
     private boolean accepted;
     private boolean joinSent;
     private boolean directConnected;
@@ -177,6 +178,7 @@ public final class PeerLinkManager {
     private void startHost(String existingPin, String existingSession) {
         closeCurrentSession(false);
         host = true;
+        retryEnabled = true;
         pin = existingPin != null && existingPin.matches("\\d{4}") ? existingPin : String.format("%04d", random.nextInt(10000));
         sessionId = existingSession != null ? existingSession : randomHex(16);
         salt = randomHex(16);
@@ -208,6 +210,7 @@ public final class PeerLinkManager {
     private void startJoin(String enteredPin) {
         closeCurrentSession(false);
         host = false;
+        retryEnabled = true;
         pin = enteredPin;
         accepted = false;
         joinSent = false;
@@ -225,6 +228,7 @@ public final class PeerLinkManager {
 
     private void connectMqtt(Runnable onReady) {
         try {
+            try { if (mqtt != null) mqtt.close(); } catch (Exception ignored) {}
             String clientId = "hns-" + UUID.randomUUID().toString().replace("-", "");
             mqtt = new MqttAsyncClient(BROKER, clientId, new MemoryPersistence());
             mqtt.setCallback(new MqttCallbackExtended() {
@@ -274,6 +278,11 @@ public final class PeerLinkManager {
                 @Override public void onFailure(IMqttToken token, Throwable exception) {
                     mqttConnected = false;
                     showStatus("Connection service unavailable", "Retrying the co-op rendezvous…");
+                    if (retryEnabled)
+                        handler.postDelayed(() -> {
+                            if (retryEnabled && (mqtt == null || !mqtt.isConnected()))
+                                connectMqtt(onReady);
+                        }, 5000);
                 }
             });
         } catch (Exception e) {
@@ -746,6 +755,7 @@ public final class PeerLinkManager {
 
     private void closeCurrentSession(boolean clearPreferences) {
         boolean wasConnected = nativeConnected;
+        retryEnabled = false;
         handler.removeCallbacks(roomHeartbeat);
         if (clearPreferences && host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
             publish(roomTopic(), new byte[0], 1, true);
