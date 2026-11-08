@@ -7,6 +7,8 @@
 #include "main.h"
 
 #include "android-ui.h"
+#include "android-peer-link.h"
+#include "android-link-cable.h"
 
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
@@ -24,6 +26,8 @@
 #include <string.h>
 
 static struct mStandardLogger _logger;
+static struct mPeerLink* sPeerLink;
+static struct mAndroidLinkCable* sLinkCable;
 
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
@@ -74,6 +78,9 @@ static void mSDLDeinit(struct mSDLRenderer* renderer) {
 
 int main(int argc, char** argv) {
 	struct mSDLRenderer renderer = {0};
+	sPeerLink = mPeerLinkCreate();
+	if (sPeerLink)
+		sLinkCable = mAndroidLinkCableCreate(sPeerLink, true);
 
 	struct mCoreOptions opts = {
 		.useBios = true,
@@ -190,6 +197,10 @@ int main(int argc, char** argv) {
 	mInputMapDeinit(&renderer.core->inputMap);
 
 	mSDLDeinit(&renderer);
+	mAndroidLinkCableDestroy(sLinkCable);
+	mPeerLinkDestroy(sPeerLink);
+	sLinkCable = NULL;
+	sPeerLink = NULL;
 	mStandardLoggerDeinit(&_logger);
 
 	mArgumentsDeinit(&args);
@@ -207,6 +218,8 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
 		return 1;
 	}
+	if (sLinkCable)
+		mAndroidLinkCableAttach(renderer->core, sLinkCable);
 	mCoreAutoloadSave(renderer->core);
 	mArgumentsApplyFileLoads(args, renderer->core);
 
@@ -239,6 +252,8 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		printf("Could not run game. Are you sure the file exists and is a compatible game?\n");
 	}
 	renderer->core->unloadROM(renderer->core);
+	if (sLinkCable)
+		mAndroidLinkCableDetach(renderer->core);
 
 	return didFail;
 }
