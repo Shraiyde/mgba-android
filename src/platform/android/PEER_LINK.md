@@ -30,9 +30,11 @@ The ROM changes currently:
 - Keep wild battles local
 - Permit each player to use their own bag during co-op battles
 - Use the existing link battle controllers and party exchange instead of creating a second battle engine
+- Exchange an initial snapshot of shared story flags, then propagate newly set Johto/Kanto story, gym, badge, and major-boss flags
+- Keep item pickups, bag contents, Pokémon, and personal service unlocks local to each player
 
 ## Remaining game work
 
-Shared story-flag synchronization and a full audit of special scripted trainer battles still need implementation. Map transitions, battle rewards, and disconnect recovery have not been verified in-game.
+A full audit of special scripted trainer battles is still needed. Map transitions, battle rewards, and disconnect recovery have not been verified in-game.
 
 The user requested that no build or test be run. These changes are committed to the existing repositories but have not been compiled or tested.
