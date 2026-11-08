@@ -1,34 +1,38 @@
-# Android peer-link foundation
+# Android peer-link
 
-This module adds a direct TCP peer transport to the Android mGBA frontend.
+The Android frontend now has a framed peer transport and an mGBA GBA
+serial-link driver. The serial driver maps GBA multiplayer transfers onto
+peer messages so Heart & Soul can use its existing link-player and link-battle
+systems rather than requiring a second battle engine.
 
-## Current protocol
-- One device listens; the other connects to its reachable IP address and port.
-- The four-digit PIN is checked during a small versioned handshake.
-- Frames carry a message type, payload length, and sequence number.
-- Reserved game message types cover overworld position, shared story flags,
-  co-op battle state, battle actions, battle results, keepalive, and chat.
-- The transport runs on a worker thread and exposes a polling event queue to
-  the SDL/main thread.
+## Connection design
 
-## Important network boundary
-A PIN authenticates a connection; it does not discover a remote device or
-create an Internet route. This first transport works on a LAN and across the
-Internet when the hosting phone is directly reachable (for example, global
-IPv6 or a forwarded port). Carrier-grade NAT and many home routers prevent
-unsolicited inbound connections. A reliable PIN-only Internet rendezvous
-without any reachable endpoint or intermediary is not technically possible.
-No cloud service or relay is included here.
+The intended phone-to-phone flow is:
+- Host creates a short-lived room and receives a four-digit pairing PIN.
+- Joiner enters only that PIN; the app resolves the peer through rendezvous.
+- ICE/NAT traversal attempts a direct peer-to-peer data channel first.
+- A relay path is used automatically when direct connectivity is unavailable.
+- The app retains the pairing and reconnects after temporary network loss.
 
-## Security status
-The initial transport is a development foundation, not production-secure:
-the PIN handshake is plaintext and the TCP stream is not encrypted. Do not
-use it on untrusted networks until authenticated encryption and a stronger
-pairing credential are added. A four-digit PIN alone is too weak as an
-Internet security credential.
+The user-facing PIN-only rendezvous and relay transport are still being
+implemented. The current socket transport is an intermediate development
+transport and requires a reachable address; it is not the final connection
+flow.
 
-## Game integration
-The message IDs are transport-level envelopes only. The modified Heart & Soul
-ROM still needs an explicit mailbox/protocol bridge so it can publish player
-coordinates, shared story flags, battle snapshots, and player actions. Bag and
-Pokémon Center/Mart inventory operations remain local to each game.
+## GBA serial bridge
+
+- `android-link-cable.c` registers a `GBASIODriver` on
+  `mPERIPH_GBA_LINK_PORT`.
+- Multiplayer SIO transfers exchange each device's 16-bit send word.
+- Host is GBA player 0; joiner is GBA player 1.
+- The bridge currently handles GBA MULTI mode. It is the transport layer for
+  the ROM's existing cable-link protocol, not the complete persistent
+  overworld co-op implementation.
+
+## Game integration still required
+
+The Heart & Soul ROM must start and maintain the link session outside the
+Cable Club, synchronize both players across ordinary map transitions, and
+route trainer-battle actions so each human controls their own battler. Shared
+story flags must be distinguished from personal events; wild battles and
+personal inventories remain local.
