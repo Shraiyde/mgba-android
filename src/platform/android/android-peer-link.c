@@ -240,6 +240,9 @@ static void* _peerThread(void* opaque) {
 	}
 done:
 	atomic_store(&link->connected, false);
+	if (atomic_load(&link->running))
+		_queueEvent(link, mPEER_EVENT_DISCONNECTED, 0, NULL, 0, 0);
+	atomic_store(&link->running, false);
 	pthread_mutex_lock(&link->lock);
 	link->sioQueueRead = 0;
 	link->sioQueueWrite = 0;
@@ -253,8 +256,6 @@ done:
 		close(link->listenFd);
 		link->listenFd = -1;
 	}
-	if (atomic_load(&link->running)) _queueEvent(link, mPEER_EVENT_DISCONNECTED, 0, NULL, 0, 0);
-	atomic_store(&link->running, false);
 	return NULL;
 }
 
