@@ -116,6 +116,7 @@ public final class PeerLinkManager {
         activity = value;
         if (instance == null)
             instance = new PeerLinkManager();
+        nativeInitialize();
     }
 
     public static void showPairingDialog() {
@@ -800,6 +801,7 @@ public final class PeerLinkManager {
         @Override public void onSetFailure(String error) {}
     }
 
+    private static native void nativeInitialize();
     private native void nativePeerConnected(boolean hostRole);
     private native void nativePeerDisconnected();
     private native void nativePeerFrame(byte[] frame);
