@@ -41,8 +41,9 @@ struct mPeerLink {
 	int socketFd;
 	int listenFd;
 	bool host;
-	const char* address;
+	char* address;
 	uint16_t port;
+	bool threadStarted;
 	char pin[MPEER_PIN_LENGTH + 1];
 	uint32_t sendSequence;
 	struct mPeerEvent queue[PEER_QUEUE_CAPACITY];
@@ -248,6 +249,7 @@ bool mPeerLinkHost(struct mPeerLink* link, uint16_t port, const char* pin) {
 		atomic_store(&link->running, false);
 		return false;
 	}
+	link->threadStarted = true;
 	return true;
 }
 
@@ -265,6 +267,7 @@ bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, c
 		link->address = NULL;
 		return false;
 	}
+	link->threadStarted = true;
 	return true;
 }
 
@@ -274,7 +277,7 @@ bool mPeerLinkSend(struct mPeerLink* link, uint16_t type, const void* data, uint
 	int fd = link->socketFd;
 	bool ok = fd >= 0 && _sendFrame(link, fd, type, data, size);
 	pthread_mutex_unlock(&link->sendLock);
-	if (!ok) shutdown(fd, SHUT_RDWR);
+	if (!ok && fd >= 0) shutdown(fd, SHUT_RDWR);
 	return ok;
 }
 
@@ -297,11 +300,12 @@ bool mPeerLinkIsConnected(struct mPeerLink* link) {
 }
 
 void mPeerLinkStop(struct mPeerLink* link) {
-	if (!link || !atomic_load(&link->running)) return;
+	if (!link || !link->threadStarted) return;
 	atomic_store(&link->running, false);
 	if (link->socketFd >= 0) shutdown(link->socketFd, SHUT_RDWR);
 	if (link->listenFd >= 0) shutdown(link->listenFd, SHUT_RDWR);
 	pthread_join(link->thread, NULL);
+	link->threadStarted = false;
 	link->socketFd = -1;
 	link->listenFd = -1;
 	free(link->address);
