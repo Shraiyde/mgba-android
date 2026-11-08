@@ -48,8 +48,11 @@ struct mPeerLink {
 	bool threadStarted;
 	char pin[MPEER_PIN_LENGTH + 1];
 	uint32_t sendSequence;
-	bool sioPending;
-	uint16_t sioValue;
+	uint16_t sioQueue[32];
+	uint8_t sioQueueRead;
+	uint8_t sioQueueWrite;
+	uint8_t sioQueueCount;
+	bool sioQueueOverflow;
 	struct mPeerEvent queue[PEER_QUEUE_CAPACITY];
 	size_t queueRead;
 	size_t queueWrite;
@@ -222,8 +225,13 @@ static void* _peerThread(void* opaque) {
 			uint16_t value;
 			memcpy(&value, payload, sizeof(value));
 			pthread_mutex_lock(&link->lock);
-			link->sioValue = ntohs(value);
-			link->sioPending = true;
+			if (link->sioQueueCount < 32) {
+				link->sioQueue[link->sioQueueWrite] = ntohs(value);
+				link->sioQueueWrite = (link->sioQueueWrite + 1) % 32;
+				++link->sioQueueCount;
+			} else {
+				link->sioQueueOverflow = true;
+			}
 			pthread_cond_broadcast(&link->sioCond);
 			pthread_mutex_unlock(&link->lock);
 		} else {
@@ -233,7 +241,10 @@ static void* _peerThread(void* opaque) {
 done:
 	atomic_store(&link->connected, false);
 	pthread_mutex_lock(&link->lock);
-	link->sioPending = false;
+	link->sioQueueRead = 0;
+	link->sioQueueWrite = 0;
+	link->sioQueueCount = 0;
+	link->sioQueueOverflow = false;
 	pthread_cond_broadcast(&link->sioCond);
 	pthread_mutex_unlock(&link->lock);
 	if (fd >= 0) close(fd);
@@ -332,12 +343,13 @@ bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t*
 	deadline.tv_sec += 10;
 	pthread_mutex_lock(&link->lock);
 	int waitResult = 0;
-	while (!link->sioPending && atomic_load(&link->running) && waitResult == 0)
+	while (!link->sioQueueCount && !link->sioQueueOverflow && atomic_load(&link->running) && waitResult == 0)
 		waitResult = pthread_cond_timedwait(&link->sioCond, &link->lock, &deadline);
-	bool received = link->sioPending;
+	bool received = link->sioQueueCount > 0 && !link->sioQueueOverflow;
 	if (received) {
-		*remoteValue = link->sioValue;
-		link->sioPending = false;
+		*remoteValue = link->sioQueue[link->sioQueueRead];
+		link->sioQueueRead = (link->sioQueueRead + 1) % 32;
+		--link->sioQueueCount;
 	}
 	pthread_mutex_unlock(&link->lock);
 	return received;
