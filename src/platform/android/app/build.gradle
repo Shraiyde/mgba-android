@@ -2,6 +2,11 @@ plugins {
 	id 'com.android.application'
 }
 
+dependencies {
+	implementation 'io.github.webrtc-sdk:android:150.7871.04'
+	implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
+}
+
 def sdl2Src = project.findProperty('SDL2_SRC') ?: System.getenv('SDL2_SRC') ?: ''
 def keystorePropsFile = rootProject.file('keystore.properties')
 def keystoreProps = new Properties()
