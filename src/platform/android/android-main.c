@@ -89,7 +89,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			uint32_t read = core->busRead32(core, sCoopMailboxAddress + 20);
 			uint32_t write = core->busRead32(core, sCoopMailboxAddress + 16);
 			unsigned sent = 0;
-			while (read != write && sent < 8) {
+			while (read != write && sent < 4) {
 				uint32_t packed = core->busRead32(core, sCoopMailboxAddress + 32 + (read % HNS_COOP_FLAG_QUEUE_SIZE) * 4);
 				uint32_t networkPacked = htonl(packed);
 				if (!mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_FLAG, &networkPacked, sizeof(networkPacked)))
