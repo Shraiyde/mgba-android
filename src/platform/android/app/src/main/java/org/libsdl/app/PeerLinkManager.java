@@ -103,6 +103,7 @@ public final class PeerLinkManager {
     private boolean host;
     private boolean mqttConnected;
     private boolean accepted;
+    private boolean joinSent;
     private boolean directConnected;
     private boolean nativeConnected;
     private KeyPair ecdhKeyPair;
@@ -180,6 +181,7 @@ public final class PeerLinkManager {
         sessionId = existingSession != null ? existingSession : randomHex(16);
         salt = randomHex(16);
         accepted = false;
+        joinSent = false;
         directConnected = false;
         nativeConnected = false;
 
@@ -187,13 +189,6 @@ public final class PeerLinkManager {
             ecdhKeyPair = createEcdhKeyPair();
             pinKey = derivePinKey(pin, hexToBytes(salt));
             hostPublicKey = Base64.encodeToString(ecdhKeyPair.getPublic().getEncoded(), Base64.NO_WRAP);
-            JSONObject advert = new JSONObject();
-            advert.put("type", "room");
-            advert.put("session", sessionId);
-            advert.put("salt", salt);
-            advert.put("pub", hostPublicKey);
-            advert.put("proof", hmacText(pinKey, sessionId + "|" + hostPublicKey));
-
             SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             prefs.edit().putString(PREF_ROLE, "host").putString(PREF_PIN, pin)
                 .putString(PREF_SESSION, sessionId).apply();
@@ -213,6 +208,7 @@ public final class PeerLinkManager {
         host = false;
         pin = enteredPin;
         accepted = false;
+        joinSent = false;
         directConnected = false;
         nativeConnected = false;
 
@@ -235,6 +231,8 @@ public final class PeerLinkManager {
                     if (host) {
                         subscribe(toHostTopic(), relayHostTopic());
                         publishRoomAdvertisement();
+                        handler.removeCallbacks(roomHeartbeat);
+                        handler.postDelayed(roomHeartbeat, 10000);
                     } else {
                         subscribe(roomTopic());
                     }
@@ -245,6 +243,7 @@ public final class PeerLinkManager {
                     mqttConnected = false;
                     if (!directConnected) {
                         accepted = false;
+                        joinSent = false;
                         sessionKey = null;
                     }
                     updateNativeConnection();
@@ -290,6 +289,7 @@ public final class PeerLinkManager {
             advert.put("salt", salt);
             advert.put("pub", hostPublicKey);
             advert.put("proof", hmacText(pinKey, sessionId + "|" + hostPublicKey));
+            advert.put("timestamp", System.currentTimeMillis());
             publish(roomTopic(), advert.toString().getBytes(StandardCharsets.UTF_8), 1, true);
         } catch (Exception ignored) {}
     }
@@ -350,7 +350,7 @@ public final class PeerLinkManager {
             return;
         }
 
-        if (accepted && incomingSession.equals(sessionId) && incomingPublicKey.equals(hostPublicKey))
+        if (joinSent && incomingSession.equals(sessionId) && incomingPublicKey.equals(hostPublicKey))
             return;
         resetPeerConnection();
         accepted = false;
@@ -362,6 +362,7 @@ public final class PeerLinkManager {
         ecdhKeyPair = createEcdhKeyPair();
         subscribe(toJoinTopic(), relayJoinTopic());
         publishJoinMessage();
+        joinSent = true;
         showStatus("Pairing", "Authenticating the other phone…");
     }
 
@@ -738,6 +739,8 @@ public final class PeerLinkManager {
     private void closeCurrentSession(boolean clearPreferences) {
         boolean wasConnected = nativeConnected;
         handler.removeCallbacks(roomHeartbeat);
+        if (clearPreferences && host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
+            publish(roomTopic(), new byte[0], 1, true);
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
         try { if (mqtt != null && mqtt.isConnected()) mqtt.disconnect(); } catch (Exception ignored) {}
