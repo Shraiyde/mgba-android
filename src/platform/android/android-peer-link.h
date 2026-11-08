@@ -20,7 +20,8 @@ enum mPeerMessageType {
 	mPEER_MSG_BATTLE_ACTION = 19,
 	mPEER_MSG_BATTLE_RESULT = 20,
 	mPEER_MSG_KEEPALIVE = 21,
-	mPEER_MSG_CHAT = 22
+	mPEER_MSG_CHAT = 22,
+	mPEER_MSG_SIO_MULTI = 23
 };
 
 enum mPeerEventType {
@@ -52,6 +53,7 @@ bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, c
 bool mPeerLinkSend(struct mPeerLink* link, uint16_t type, const void* data, uint32_t size);
 bool mPeerLinkPoll(struct mPeerLink* link, struct mPeerEvent* event);
 bool mPeerLinkIsConnected(struct mPeerLink* link);
+bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t* remoteValue);
 void mPeerLinkStop(struct mPeerLink* link);
 
 #endif
