@@ -484,6 +484,9 @@ public final class PeerLinkManager {
                 }
                 @Override public void onRenegotiationNeeded() {}
                 @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) {}
+                public void onConnectionChange(PeerConnection.PeerConnectionState state) {}
+                public void onTrack(org.webrtc.RtpTransceiver transceiver) {}
+                public void onRemoveTrack(org.webrtc.RtpReceiver receiver) {}
             });
 
             if (peerConnection == null)
