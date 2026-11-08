@@ -45,9 +45,8 @@ struct mPeerLink;
 struct mPeerLink* mPeerLinkCreate(void);
 void mPeerLinkDestroy(struct mPeerLink* link);
 
-/* Host accepts one peer on the selected port. Join connects to a reachable
- * IPv4/IPv6 address. The four-digit PIN authenticates the peer; it is not
- * an Internet rendezvous service or an encrypted transport. */
+/* Raw TCP host/join remain available for local development. The Android
+ * frontend uses PeerLinkManager for PIN rendezvous, WebRTC, and relay fallback. */
 bool mPeerLinkHost(struct mPeerLink* link, uint16_t port, const char* pin);
 bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, const char* pin);
 bool mPeerLinkSend(struct mPeerLink* link, uint16_t type, const void* data, uint32_t size);
