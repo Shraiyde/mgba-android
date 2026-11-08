@@ -21,6 +21,7 @@
 #include <mgba-util/vfs.h>
 
 #include <SDL.h>
+#include <arpa/inet.h>
 
 #define PORT "android"
 #include <stdlib.h>
@@ -33,7 +34,9 @@ static struct mAndroidLinkCable* sLinkCable;
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_SIZE 16
+#define HNS_COOP_MAILBOX_VERSION 2
+#define HNS_COOP_MAILBOX_SIZE 544
+#define HNS_COOP_FLAG_QUEUE_SIZE 64
 #define GBA_EWRAM_START 0x02000000
 #define GBA_EWRAM_END 0x02040000
 
@@ -70,7 +73,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		uint32_t address;
 		for (address = GBA_EWRAM_START; address + HNS_COOP_MAILBOX_SIZE <= GBA_EWRAM_END; address += 4) {
 			if (core->busRead32(core, address) == HNS_COOP_MAILBOX_MAGIC
-				&& core->busRead16(core, address + 4) == 1
+				&& core->busRead16(core, address + 4) == HNS_COOP_MAILBOX_VERSION
 				&& core->busRead16(core, address + 6) == HNS_COOP_MAILBOX_SIZE) {
 				sCoopMailboxAddress = address;
 				break;
@@ -79,7 +82,39 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	}
 
 	if (sCoopMailboxAddress) {
-		core->busWrite32(core, sCoopMailboxAddress + 8, mPeerLinkIsConnected(sPeerLink) ? 1 : 0);
+		bool connected = mPeerLinkIsConnected(sPeerLink);
+		core->busWrite32(core, sCoopMailboxAddress + 8, connected ? 1 : 0);
+
+		if (connected) {
+			uint32_t read = core->busRead32(core, sCoopMailboxAddress + 20);
+			uint32_t write = core->busRead32(core, sCoopMailboxAddress + 16);
+			unsigned sent = 0;
+			while (read != write && sent < 8) {
+				uint32_t packed = core->busRead32(core, sCoopMailboxAddress + 32 + (read % HNS_COOP_FLAG_QUEUE_SIZE) * 4);
+				uint32_t networkPacked = htonl(packed);
+				if (!mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_FLAG, &networkPacked, sizeof(networkPacked)))
+					break;
+				++read;
+				++sent;
+				core->busWrite32(core, sCoopMailboxAddress + 20, read);
+			}
+
+			struct mPeerEvent peerEvent;
+			while (mPeerLinkPoll(sPeerLink, &peerEvent)) {
+				if (peerEvent.type != mPEER_EVENT_MESSAGE || peerEvent.messageType != mPEER_MSG_WORLD_FLAG
+					|| peerEvent.size != sizeof(uint32_t))
+					continue;
+				uint32_t networkPacked;
+				memcpy(&networkPacked, peerEvent.data, sizeof(networkPacked));
+				uint32_t packed = ntohl(networkPacked);
+				uint32_t incomingWrite = core->busRead32(core, sCoopMailboxAddress + 24);
+				uint32_t incomingRead = core->busRead32(core, sCoopMailboxAddress + 28);
+				if (incomingWrite - incomingRead >= HNS_COOP_FLAG_QUEUE_SIZE)
+					continue;
+				core->busWrite32(core, sCoopMailboxAddress + 288 + (incomingWrite % HNS_COOP_FLAG_QUEUE_SIZE) * 4, packed);
+				core->busWrite32(core, sCoopMailboxAddress + 24, incomingWrite + 1);
+			}
+		}
 	}
 }
 
