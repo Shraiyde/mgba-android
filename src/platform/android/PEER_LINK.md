@@ -1,38 +1,38 @@
 # Android peer-link
 
-The Android frontend now has a framed peer transport and an mGBA GBA
-serial-link driver. The serial driver maps GBA multiplayer transfers onto
-peer messages so Heart & Soul can use its existing link-player and link-battle
-systems rather than requiring a second battle engine.
+The Android app now uses a four-digit PIN rendezvous flow:
 
-## Connection design
+1. One phone chooses **Host** and displays a four-digit PIN.
+2. The other chooses **Join** and enters that PIN.
+3. The apps establish a WebRTC data channel directly when NAT traversal succeeds.
+4. If a direct route cannot be established, encrypted game frames automatically use the MQTT relay.
+5. The host republishes its room advertisement and the clients reconnect after temporary network loss.
 
-The intended phone-to-phone flow is:
-- Host creates a short-lived room and receives a four-digit pairing PIN.
-- Joiner enters only that PIN; the app resolves the peer through rendezvous.
-- ICE/NAT traversal attempts a direct peer-to-peer data channel first.
-- A relay path is used automatically when direct connectivity is unavailable.
-- The app retains the pairing and reconnects after temporary network loss.
+No PC-hosted server, Tailscale, or Cloudflare tunnel is used. The rendezvous/relay broker is the public EMQX MQTT WebSocket endpoint. WebRTC uses public STUN servers; MQTT is the fallback relay.
 
-The user-facing PIN-only rendezvous and relay transport are still being
-implemented. The current socket transport is an intermediate development
-transport and requires a reachable address; it is not the final connection
-flow.
+## Transport implementation
 
-## GBA serial bridge
+- `PeerLinkManager.java` owns the PIN UI, MQTT rendezvous, WebRTC data channel, relay fallback, and reconnect behavior.
+- The PIN-derived PBKDF2/HMAC handshake authenticates the exchanged ephemeral ECDH keys.
+- Peer frames are encrypted with AES-GCM before using either transport.
+- `android-peer-jni.c` passes encrypted peer frames between Java and native mGBA.
+- `android-peer-link.c` carries framed messages and queues GBA serial words.
+- `android-link-cable.c` exposes the peer transport as the GBA multiplayer SIO driver.
 
-- `android-link-cable.c` registers a `GBASIODriver` on
-  `mPERIPH_GBA_LINK_PORT`.
-- Multiplayer SIO transfers exchange each device's 16-bit send word.
-- Host is GBA player 0; joiner is GBA player 1.
-- The bridge currently handles GBA MULTI mode. It is the transport layer for
-  the ROM's existing cable-link protocol, not the complete persistent
-  overworld co-op implementation.
+## Heart & Soul ROM integration
 
-## Game integration still required
+The ROM exposes an EWRAM mailbox identified by `COOP` magic. The Android frontend writes the peer-connected state into it. The game then starts its existing GBA link protocol and returns to the field in link mode.
 
-The Heart & Soul ROM must start and maintain the link session outside the
-Cable Club, synchronize both players across ordinary map transitions, and
-route trainer-battle actions so each human controls their own battler. Shared
-story flags must be distinguished from personal events; wild battles and
-personal inventories remain local.
+The ROM changes currently:
+- Spawn and update the existing link-player objects in the overworld
+- Check both linked players for NPC trainer sight, so either player can trigger an encounter
+- Convert ordinary NPC trainer battles into two-player link double battles
+- Keep wild battles local
+- Permit each player to use their own bag during co-op battles
+- Use the existing link battle controllers and party exchange instead of creating a second battle engine
+
+## Remaining game work
+
+Shared story-flag synchronization and a full audit of special scripted trainer battles still need implementation. Map transitions, battle rewards, and disconnect recovery have not been verified in-game.
+
+The user requested that no build or test be run. These changes are committed to the existing repositories but have not been compiled or tested.
