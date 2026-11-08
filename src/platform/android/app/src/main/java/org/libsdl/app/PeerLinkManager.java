@@ -14,6 +14,7 @@ import android.widget.TextView;
 
 import org.eclipse.paho.client.mqttv3.IMqttActionListener;
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
+import org.eclipse.paho.client.mqttv3.IMqttToken;
 import org.eclipse.paho.client.mqttv3.MqttAsyncClient;
 import org.eclipse.paho.client.mqttv3.MqttCallbackExtended;
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
@@ -28,6 +29,7 @@ import org.webrtc.PeerConnectionFactory;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 
+import java.nio.ByteBuffer;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
@@ -233,6 +235,10 @@ public final class PeerLinkManager {
 
                 @Override public void connectionLost(Throwable cause) {
                     mqttConnected = false;
+                    if (!directConnected) {
+                        accepted = false;
+                        sessionKey = null;
+                    }
                     updateNativeConnection();
                     showStatus("Reconnecting", "Restoring the co-op connection…");
                 }
@@ -303,10 +309,14 @@ public final class PeerLinkManager {
                 return;
             }
             if (host && topic.equals(toHostTopic())) {
-                handleJoinMessage(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
+                JSONObject incoming = new JSONObject(new String(payload, StandardCharsets.UTF_8));
+                if ("join".equals(incoming.optString("type")))
+                    handleJoinMessage(incoming);
+                else
+                    handleSignal(incoming);
                 return;
             }
-            if (topic.equals(host ? toHostTopic() : toJoinTopic())) {
+            if (!host && topic.equals(toJoinTopic())) {
                 handleSignal(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 return;
             }
@@ -319,6 +329,9 @@ public final class PeerLinkManager {
     private void handleRoomAdvertisement(JSONObject advert) throws Exception {
         if (!"room".equals(advert.optString("type")))
             return;
+        long timestamp = advert.optLong("timestamp", 0);
+        if (timestamp == 0 || System.currentTimeMillis() - timestamp > 30000)
+            return;
         String incomingSession = advert.getString("session");
         String incomingSalt = advert.getString("salt");
         String incomingPublicKey = advert.getString("pub");
@@ -329,6 +342,11 @@ public final class PeerLinkManager {
             return;
         }
 
+        if (!incomingSession.equals(sessionId) || !incomingPublicKey.equals(hostPublicKey)) {
+            resetPeerConnection();
+            accepted = false;
+            sessionKey = null;
+        }
         sessionId = incomingSession;
         salt = incomingSalt;
         hostPublicKey = incomingPublicKey;
@@ -340,9 +358,11 @@ public final class PeerLinkManager {
     }
 
     private void handleJoinMessage(JSONObject join) throws Exception {
-        if (!"join".equals(join.optString("type")) || !sessionId.equals(join.optString("session")) || accepted)
+        if (!"join".equals(join.optString("type")) || !sessionId.equals(join.optString("session")) || (accepted && directConnected))
             return;
 
+        resetPeerConnection();
+        accepted = false;
         String joinPublicKey = join.getString("pub");
         String expected = hmacText(pinKey, sessionId + "|" + hostPublicKey + "|" + joinPublicKey);
         if (!constantTimeEquals(expected, join.getString("proof")))
@@ -358,7 +378,7 @@ public final class PeerLinkManager {
         accept.put("proof", acceptProof);
         publish(toJoinTopic(), accept.toString().getBytes(StandardCharsets.UTF_8), 1, false);
 
-        nativePeerConnected(true);
+        updateNativeConnection();
         showStatus("Paired", "Connected. Establishing the direct phone-to-phone route…");
         createPeerConnection(true);
     }
@@ -374,7 +394,7 @@ public final class PeerLinkManager {
             byte[] shared = deriveSharedSecret(ecdhKeyPair, hostPublicKey);
             sessionKey = deriveSessionKey(shared, pinKey, sessionId);
             accepted = true;
-            nativePeerConnected(false);
+            updateNativeConnection();
             showStatus("Paired", "Connected. Establishing the direct phone-to-phone route…");
             createPeerConnection(false);
             return;
@@ -386,13 +406,19 @@ public final class PeerLinkManager {
 
         if ("offer".equals(type) && !host) {
             SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, value);
-            peerConnection.setRemoteDescription(new SimpleSdpObserver(), offer);
-            flushPendingCandidates();
-            createAnswer();
+            peerConnection.setRemoteDescription(new SimpleSdpObserver() {
+                @Override public void onSetSuccess() {
+                    flushPendingCandidates();
+                    createAnswer();
+                }
+            }, offer);
         } else if ("answer".equals(type) && host) {
             SessionDescription answer = new SessionDescription(SessionDescription.Type.ANSWER, value);
-            peerConnection.setRemoteDescription(new SimpleSdpObserver(), answer);
-            flushPendingCandidates();
+            peerConnection.setRemoteDescription(new SimpleSdpObserver() {
+                @Override public void onSetSuccess() {
+                    flushPendingCandidates();
+                }
+            }, answer);
         } else if ("ice".equals(type)) {
             JSONObject candidate = new JSONObject(value);
             IceCandidate ice = new IceCandidate(candidate.getString("mid"), candidate.getInt("line"), candidate.getString("sdp"));
@@ -418,6 +444,7 @@ public final class PeerLinkManager {
                 @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
                     directConnected = state == PeerConnection.IceConnectionState.CONNECTED
                         || state == PeerConnection.IceConnectionState.COMPLETED;
+                    updateNativeConnection();
                     if (directConnected)
                         showStatus("Connected directly", "Phone-to-phone connection is active.");
                     else if (accepted)
@@ -495,6 +522,7 @@ public final class PeerLinkManager {
                 } else if (accepted && !directConnected) {
                     showStatus("Connected by relay", "Using the automatic relay route.");
                 }
+                updateNativeConnection();
             }
             @Override public void onMessage(DataChannel.Buffer buffer) {
                 byte[] encrypted = new byte[buffer.data.remaining()];
@@ -541,7 +569,7 @@ public final class PeerLinkManager {
                 return dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true));
             }
             if (mqttConnected) {
-                publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 0, false);
+                publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 1, false);
                 return true;
             }
         } catch (Exception ignored) {}
@@ -688,6 +716,7 @@ public final class PeerLinkManager {
     }
 
     private void closeCurrentSession(boolean clearPreferences) {
+        boolean wasConnected = nativeConnected;
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
         try { if (mqtt != null && mqtt.isConnected()) mqtt.disconnect(); } catch (Exception ignored) {}
@@ -706,7 +735,7 @@ public final class PeerLinkManager {
         receiveCounters[0] = receiveCounters[1] = 0;
         if (clearPreferences && activity != null)
             activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
-        if (nativeConnected)
+        if (wasConnected)
             nativePeerDisconnected();
     }
 
