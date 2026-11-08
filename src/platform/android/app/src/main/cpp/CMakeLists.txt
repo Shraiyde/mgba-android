@@ -18,6 +18,7 @@ add_subdirectory(${SDL2_SRC} sdl2)
 add_library(main SHARED
 	${MGBA_ROOT}/src/platform/android/android-main.c
 	${MGBA_ROOT}/src/platform/android/android-ui.c
+	${MGBA_ROOT}/src/platform/android/android-peer-link.c
 	${MGBA_ROOT}/src/platform/sdl/sdl-audio.c
 	${MGBA_ROOT}/src/platform/sdl/sdl-events.c
 	${MGBA_ROOT}/src/platform/sdl/sw-sdl2.c)
