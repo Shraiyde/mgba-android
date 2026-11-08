@@ -233,6 +233,7 @@ static void* _peerThread(void* opaque) {
 done:
 	atomic_store(&link->connected, false);
 	pthread_mutex_lock(&link->lock);
+	link->sioPending = false;
 	pthread_cond_broadcast(&link->sioCond);
 	pthread_mutex_unlock(&link->lock);
 	if (fd >= 0) close(fd);
@@ -262,6 +263,8 @@ bool mPeerLinkHost(struct mPeerLink* link, uint16_t port, const char* pin) {
 	link->host = true;
 	link->port = port ? port : MPEER_DEFAULT_PORT;
 	memcpy(link->pin, pin, MPEER_PIN_LENGTH + 1);
+	link->sioPending = false;
+	link->sendSequence = 0;
 	atomic_store(&link->running, true);
 	if (pthread_create(&link->thread, NULL, _peerThread, link) != 0) {
 		atomic_store(&link->running, false);
@@ -327,7 +330,7 @@ bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t*
 	deadline.tv_sec += 10;
 	pthread_mutex_lock(&link->lock);
 	int waitResult = 0;
-	while (!link->sioPending && atomic_load(&link->running) && waitResult != ETIMEDOUT)
+	while (!link->sioPending && atomic_load(&link->running) && waitResult == 0)
 		waitResult = pthread_cond_timedwait(&link->sioCond, &link->lock, &deadline);
 	bool received = link->sioPending;
 	if (received) {
