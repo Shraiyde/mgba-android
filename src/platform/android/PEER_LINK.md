@@ -21,11 +21,13 @@ The PC makes an outbound MQTT connection to the public EMQX broker; the phones u
 
 ## Heart & Soul ROM integration
 
-The ROM exposes an EWRAM mailbox identified by `COOP` magic. The Android frontend writes the peer-connected state into it. The game then starts its existing GBA link protocol and returns to the field in link mode.
+The ROM exposes a versioned EWRAM mailbox identified by `COOP` magic. The Android frontend writes peer-connected state into it, relays shared story flags and variables, exchanges map IDs, and acknowledges the initial story snapshot. The game starts its existing GBA link protocol and returns to the field in link mode. Co-op trainer battles are enabled only while both peers report the same map.
 
 The ROM changes currently:
 - Spawn and update the existing link-player objects in the overworld
 - Check both linked players for NPC trainer sight, so either player can trigger an encounter
+- Render the remote player with the boy/girl avatar selected on that player's save
+- Exchange map identity so trainer co-op is restricted to peers on the same map
 - Convert ordinary NPC trainer battles into two-player link double battles
 - Keep wild battles local
 - Permit each player to use their own bag during co-op battles
