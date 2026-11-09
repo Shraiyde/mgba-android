@@ -110,7 +110,7 @@ internal static class Program
         await _mqtt!.ConnectAsync(options, _stop.Token);
         await _mqtt.SubscribeAsync(new MqttTopicFilterBuilder()
             .WithTopic($"{RootTopic}/up/+/+")
-            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
+            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
             .Build(), _stop.Token);
         await PublishRoomAdvertisement();
         Console.WriteLine("[network] Connected to relay broker. Waiting for both players...");
@@ -245,7 +245,7 @@ internal static class Program
         var message = new MqttApplicationMessageBuilder()
             .WithTopic($"{RootTopic}/down/{peer.Id}/frame")
             .WithPayload(payload)
-            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
+            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
             .Build();
         try { await _mqtt!.PublishAsync(message, _stop.Token); }
         catch (Exception ex) { Console.WriteLine("[relay] " + ex.Message); }
