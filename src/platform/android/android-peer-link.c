@@ -291,6 +291,9 @@ struct mPeerLink* mPeerLinkCreate(void) {
 	pthread_mutex_init(&link->lock, NULL);
 	pthread_mutex_init(&link->sendLock, NULL);
 	pthread_cond_init(&link->sioCond, NULL);
+	atomic_init(&link->running, false);
+	atomic_init(&link->connected, false);
+	atomic_init(&link->remoteSioActive, false);
 	link->socketFd = -1;
 	link->listenFd = -1;
 	return link;
