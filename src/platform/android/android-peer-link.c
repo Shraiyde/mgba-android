@@ -41,6 +41,7 @@ struct mPeerLink {
 	pthread_cond_t sioCond;
 	atomic_bool running;
 	atomic_bool connected;
+	atomic_bool remoteSioActive;
 	int socketFd;
 	int listenFd;
 	bool host;
@@ -137,6 +138,20 @@ static void _queueEvent(struct mPeerLink* link, enum mPeerEventType type, uint16
 	pthread_mutex_unlock(&link->lock);
 }
 
+static void _setRemoteSioActive(struct mPeerLink* link, bool active) {
+	bool wasActive = atomic_exchange(&link->remoteSioActive, active);
+	pthread_mutex_lock(&link->lock);
+	if (!active) {
+		link->sioQueueRead = 0;
+		link->sioQueueWrite = 0;
+		link->sioQueueCount = 0;
+		link->sioQueueOverflow = false;
+	}
+	if (wasActive != active)
+		pthread_cond_broadcast(&link->sioCond);
+	pthread_mutex_unlock(&link->lock);
+}
+
 static void _processPayload(struct mPeerLink* link, uint16_t type, const uint8_t* payload, uint32_t size) {
 	if (type == mPEER_MSG_SIO_MULTI && size == sizeof(uint16_t)) {
 		uint16_t value;
@@ -152,6 +167,11 @@ static void _processPayload(struct mPeerLink* link, uint16_t type, const uint8_t
 		pthread_cond_broadcast(&link->sioCond);
 		pthread_mutex_unlock(&link->lock);
 	} else {
+		if (type == mPEER_MSG_POSITION && size == 2 * sizeof(uint32_t)) {
+			uint32_t networkSioActive;
+			memcpy(&networkSioActive, payload + sizeof(uint32_t), sizeof(networkSioActive));
+			_setRemoteSioActive(link, ntohl(networkSioActive) != 0);
+		}
 		_queueEvent(link, mPEER_EVENT_MESSAGE, type, payload, size, 0);
 	}
 }
@@ -363,7 +383,8 @@ bool mPeerLinkIsConnected(struct mPeerLink* link) {
 }
 
 bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t* remoteValue) {
-	if (!link || !remoteValue || !atomic_load(&link->connected)) return false;
+	if (!link || !remoteValue || !atomic_load(&link->connected)
+		|| !atomic_load(&link->remoteSioActive)) return false;
 	uint16_t payload = htons(localValue);
 	if (!mPeerLinkSend(link, mPEER_MSG_SIO_MULTI, &payload, sizeof(payload))) return false;
 
@@ -372,7 +393,8 @@ bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t*
 	deadline.tv_sec += 10;
 	pthread_mutex_lock(&link->lock);
 	int waitResult = 0;
-	while (!link->sioQueueCount && !link->sioQueueOverflow && atomic_load(&link->running) && waitResult == 0)
+	while (!link->sioQueueCount && !link->sioQueueOverflow && atomic_load(&link->running)
+		&& atomic_load(&link->remoteSioActive) && waitResult == 0)
 		waitResult = pthread_cond_timedwait(&link->sioCond, &link->lock, &deadline);
 	bool received = link->sioQueueCount > 0 && !link->sioQueueOverflow;
 	if (received) {
@@ -418,6 +440,7 @@ void mPeerLinkSetConnected(struct mPeerLink* link, bool connected) {
 	bool wasConnected = atomic_load(&link->connected);
 	atomic_store(&link->running, connected);
 	atomic_store(&link->connected, connected);
+	atomic_store(&link->remoteSioActive, connected);
 	pthread_mutex_lock(&link->lock);
 	if (!connected) {
 		link->sioQueueRead = 0;
