@@ -5,6 +5,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "android-ui.h"
 
+#include <jni.h>
+#include <SDL_system.h>
+
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
