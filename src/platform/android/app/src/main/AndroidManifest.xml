@@ -9,16 +9,16 @@
 	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
 
 	<application
-		android:label="mGBA"
+		android:label="Heart &amp; Soul Co-op"
 		android:icon="@mipmap/ic_launcher"
 		android:allowBackup="true"
 		android:hardwareAccelerated="true"
 		android:requestLegacyExternalStorage="true"
-		android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+		android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen">
 
 		<activity
 			android:name="org.libsdl.app.SDLActivity"
-			android:label="mGBA"
+			android:label="Heart &amp; Soul Co-op"
 			android:exported="true"
 			android:alwaysRetainTaskState="true"
 			android:launchMode="singleInstance"
