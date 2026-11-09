@@ -34,8 +34,8 @@ static struct mAndroidLinkCable* sLinkCable;
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 5
-#define HNS_COOP_MAILBOX_SIZE 2116
+#define HNS_COOP_MAILBOX_VERSION 6
+#define HNS_COOP_MAILBOX_SIZE 2120
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define HNS_COOP_VAR_QUEUE_SIZE 128
 #define GBA_EWRAM_START 0x02000000
@@ -44,9 +44,11 @@ static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 static uint32_t sCoopMailboxAddress;
 static uint32_t sCoopMailboxNextScan;
 static uint32_t sCoopLastMapSent = UINT32_MAX;
+static uint32_t sCoopLastSioActive = UINT32_MAX;
 
 void mAndroidPeerLinkSetConnected(bool host) {
 	sCoopLastMapSent = UINT32_MAX;
+	sCoopLastSioActive = UINT32_MAX;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
 		mPeerLinkSetConnected(sPeerLink, true);
@@ -57,6 +59,7 @@ void mAndroidPeerLinkSetConnected(bool host) {
 
 void mAndroidPeerLinkSetDisconnected(void) {
 	sCoopLastMapSent = UINT32_MAX;
+	sCoopLastSioActive = UINT32_MAX;
 	if (sPeerLink)
 		mPeerLinkSetConnected(sPeerLink, false);
 }
@@ -91,14 +94,18 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		if (!connected) {
 			core->busWrite32(core, sCoopMailboxAddress + 2112, 0);
 			sCoopLastMapSent = UINT32_MAX;
+			sCoopLastSioActive = UINT32_MAX;
 		}
 
 		if (connected) {
 			uint32_t localMapId = core->busRead32(core, sCoopMailboxAddress + 2104);
-			if (localMapId != sCoopLastMapSent || frame % 30 == 0) {
-				uint32_t networkMapId = htonl(localMapId);
-				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, &networkMapId, sizeof(networkMapId)))
+			uint32_t localSioActive = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
+			if (localMapId != sCoopLastMapSent || localSioActive != sCoopLastSioActive || frame % 30 == 0) {
+				uint32_t networkState[2] = { htonl(localMapId), htonl(localSioActive) };
+				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, sizeof(networkState))) {
 					sCoopLastMapSent = localMapId;
+					sCoopLastSioActive = localSioActive;
+				}
 			}
 
 			uint32_t read = core->busRead32(core, sCoopMailboxAddress + 20);
@@ -137,7 +144,16 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 
 			struct mPeerEvent peerEvent;
 			while (mPeerLinkPoll(sPeerLink, &peerEvent)) {
-				if (peerEvent.type != mPEER_EVENT_MESSAGE || peerEvent.size != sizeof(uint32_t))
+				if (peerEvent.type != mPEER_EVENT_MESSAGE)
+					continue;
+				if (peerEvent.messageType == mPEER_MSG_POSITION && peerEvent.size == 2 * sizeof(uint32_t)) {
+					uint32_t networkState[2];
+					memcpy(networkState, peerEvent.data, sizeof(networkState));
+					core->busWrite32(core, sCoopMailboxAddress + 2108, ntohl(networkState[0]));
+					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);
+					continue;
+				}
+				if (peerEvent.size != sizeof(uint32_t))
 					continue;
 				uint32_t networkPacked;
 				memcpy(&networkPacked, peerEvent.data, sizeof(networkPacked));
@@ -359,6 +375,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	sCoopMailboxAddress = 0;
 	sCoopMailboxNextScan = 0;
 	sCoopLastMapSent = UINT32_MAX;
+	sCoopLastSioActive = UINT32_MAX;
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
 		return 1;
 	}
