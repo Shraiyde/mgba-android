@@ -235,7 +235,11 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	struct mCoreThread* context = user;
 	SDL_Event event;
+	bool firstFrameLogged = false;
+	bool renderCopyErrorLogged = false;
 
+	SDL_Log("Android video loop entered: window=%p renderer=%p texture=%p size=%ux%u",
+		renderer->window, renderer->sdlRenderer, renderer->sdlTex, renderer->width, renderer->height);
 	while (mCoreThreadIsActive(context)) {
 		while (SDL_PollEvent(&event)) {
 			mAndroidOverlayHandleEvent(&event);
@@ -256,18 +260,35 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			dest.y = (renderer->viewportHeight - dest.h) / 2;
 
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
-			SDL_RenderClear(renderer->sdlRenderer);
-			SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, 0, &dest);
+			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {
+				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android frame clear failed: %s", SDL_GetError());
+			}
+			if (SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, 0, &dest) < 0 && !renderCopyErrorLogged) {
+				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android game frame copy failed: %s", SDL_GetError());
+				renderCopyErrorLogged = true;
+			}
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
 			SDL_RenderPresent(renderer->sdlRenderer);
+			if (!firstFrameLogged) {
+				firstFrameLogged = true;
+				SDL_Log("First Android game frame presented; core frame=%u", renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0);
+			}
 
-
-			int stride;
-			SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride);
+			int stride = 0;
+			if (SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride) < 0 || !renderer->outputBuffer) {
+				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android game texture relock failed: %s", SDL_GetError());
+				mCoreThreadEnd(context);
+				mCoreSyncWaitFrameEnd(&context->impl->sync);
+				break;
+			}
 			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, stride / BYTES_PER_PIXEL);
 		}
 		mCoreSyncWaitFrameEnd(&context->impl->sync);
 		mSDLAndroidUpdateCoopMailbox(renderer->core);
+	}
+	if (!firstFrameLogged) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android video loop exited before presenting its first frame (active=%d, crashed=%d)",
+			mCoreThreadIsActive(context), mCoreThreadHasCrashed(context));
 	}
 }
 
@@ -376,6 +397,7 @@ int main(int argc, char** argv) {
 	renderer.runloop = mSDLAndroidRunloop;
 
 	if (!renderer.init(&renderer)) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android renderer initialization failed: %s", SDL_GetError());
 		mArgumentsDeinit(&args);
 		mCoreConfigDeinit(&renderer.core->config);
 		renderer.core->deinit(renderer.core);
@@ -400,7 +422,9 @@ int main(int argc, char** argv) {
 		mPeerLinkUseJavaTransport(sPeerLink, true);
 		sLinkCable = mAndroidLinkCableCreate(sPeerLink, true);
 	}
+	SDL_Log("Android renderer ready; loading selected ROM: %s", args.fname);
 	int ret = mSDLRun(&renderer, &args);
+	mAndroidOverlaySetWindow(NULL);
 	mSDLDetachPlayer(&renderer.events, &renderer.player);
 	mInputMapDeinit(&renderer.core->inputMap);
 
@@ -429,9 +453,12 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	sCoopMailboxNextScan = 0;
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
+	SDL_Log("Loading ROM: %s", args->fname ? args->fname : "(null)");
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreLoadFile failed for selected ROM");
 		return 1;
 	}
+	SDL_Log("ROM loaded successfully: %s", args->fname);
 	if (sLinkCable)
 		mAndroidLinkCableAttach(renderer->core, sLinkCable);
 	mCoreAutoloadSave(renderer->core);
@@ -442,6 +469,11 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	thread.logger.logger = &_logger.d;
 
 	bool didFail = !mCoreThreadStart(&thread);
+	if (didFail) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreThreadStart failed; emulator core did not start");
+	} else {
+		SDL_Log("Emulator core thread started successfully");
+	}
 
 	if (!didFail) {
 		mSDLSetScreensaverSuspendable(&renderer->events, renderer->core->opts.suspendScreensaver);
