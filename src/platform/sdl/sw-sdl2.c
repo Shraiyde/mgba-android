@@ -21,6 +21,7 @@ void mSDLSWCreate(struct mSDLRenderer* renderer) {
 
 bool mSDLSWInit(struct mSDLRenderer* renderer) {
 	unsigned width, height;
+	bool softwareRenderer = false;
 	renderer->core->baseVideoSize(renderer->core, &width, &height);
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 	renderer->window = SDL_CreateWindow(projectName, renderer->viewportWidth, renderer->viewportHeight, SDL_WINDOW_FULLSCREEN * renderer->player.fullscreen);
@@ -37,6 +38,7 @@ bool mSDLSWInit(struct mSDLRenderer* renderer) {
 		// Some Android devices expose no accelerated SDL renderer. Keep the
 		// emulator playable with SDL's software renderer instead.
 		renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_SOFTWARE);
+		softwareRenderer = true;
 	}
 #endif
 	if (!renderer->window || !renderer->sdlRenderer) {
@@ -49,6 +51,8 @@ bool mSDLSWInit(struct mSDLRenderer* renderer) {
 	}
 	SDL_GetWindowSize(renderer->window, &renderer->viewportWidth, &renderer->viewportHeight);
 	renderer->player.window = renderer->window;
+create_game_texture:
+	renderer->outputBuffer = NULL;
 #ifdef COLOR_16_BIT
 #ifdef COLOR_5_6_5
 	renderer->sdlTex = SDL_CreateTexture(renderer->sdlRenderer, SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STREAMING, width, height);
@@ -59,8 +63,21 @@ bool mSDLSWInit(struct mSDLRenderer* renderer) {
 	renderer->sdlTex = SDL_CreateTexture(renderer->sdlRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, height);
 #endif
 
+	if (!renderer->sdlTex && !softwareRenderer) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Accelerated game texture creation failed; retrying with software renderer: %s", SDL_GetError());
+		SDL_DestroyRenderer(renderer->sdlRenderer);
+		renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_SOFTWARE);
+		softwareRenderer = true;
+		if (!renderer->sdlRenderer) {
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not create software SDL renderer: %s", SDL_GetError());
+			SDL_DestroyWindow(renderer->window);
+			renderer->window = NULL;
+			return false;
+		}
+		goto create_game_texture;
+	}
 	if (!renderer->sdlTex) {
-		printf("Could not create SDL game texture: %s\\n", SDL_GetError());
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not create SDL game texture: %s", SDL_GetError());
 		SDL_DestroyRenderer(renderer->sdlRenderer);
 		SDL_DestroyWindow(renderer->window);
 		renderer->sdlRenderer = NULL;
@@ -68,11 +85,22 @@ bool mSDLSWInit(struct mSDLRenderer* renderer) {
 		return false;
 	}
 
-	int stride;
+	int stride = 0;
 	if (SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride) < 0 || !renderer->outputBuffer) {
-		printf("Could not lock SDL game texture: %s\\n", SDL_GetError());
-		SDL_DestroyTexture(renderer->sdlTex);
-		SDL_DestroyRenderer(renderer->sdlRenderer);
+		if (!softwareRenderer) {
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Accelerated game texture lock failed; retrying with software renderer: %s", SDL_GetError());
+			SDL_DestroyTexture(renderer->sdlTex);
+			renderer->sdlTex = NULL;
+			SDL_DestroyRenderer(renderer->sdlRenderer);
+			renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_SOFTWARE);
+			softwareRenderer = true;
+			if (renderer->sdlRenderer) {
+				goto create_game_texture;
+			}
+		}
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not lock SDL game texture: %s", SDL_GetError());
+		if (renderer->sdlTex) SDL_DestroyTexture(renderer->sdlTex);
+		if (renderer->sdlRenderer) SDL_DestroyRenderer(renderer->sdlRenderer);
 		SDL_DestroyWindow(renderer->window);
 		renderer->sdlTex = NULL;
 		renderer->sdlRenderer = NULL;
