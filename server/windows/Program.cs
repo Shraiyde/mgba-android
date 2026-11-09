@@ -123,7 +123,7 @@ internal sealed class PcRelayServer
                         if (_mqtt.IsConnected)
                         {
                             await RemoveRoomAdvertisementAsync();
-                            await _mqtt.DisconnectAsync(new MqttClientDisconnectOptions());
+                            await _mqtt.DisconnectAsync(new MqttClientDisconnectOptionsBuilder().Build());
                         }
                     }
                     catch { }
