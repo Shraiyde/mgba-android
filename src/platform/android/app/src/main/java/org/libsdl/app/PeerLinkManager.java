@@ -174,8 +174,7 @@ public final class PeerLinkManager {
         choices.add("Play Offline");
 
         new AlertDialog.Builder(activity)
-            .setTitle("Heart & Soul Co-op")
-            .setMessage("Connect the two phones with a four-digit PIN.")
+            .setTitle("Heart & Soul Co-op — Co-op Options")
             .setItems(choices.toArray(new String[0]), (dialog, which) -> {
                 String choice = choices.get(which);
                 if ("PC Server".equals(choice))
