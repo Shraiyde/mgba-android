@@ -200,7 +200,12 @@ char* mAndroidPickRom(void) {
 			const char* utf = (*env)->GetStringUTFChars(env, value, NULL);
 			if (utf && utf[0]) {
 				if (strcmp(utf, "__CANCELLED__") == 0) {
-					result = NULL;
+					(*env)->ReleaseStringUTFChars(env, value, utf);
+					(*env)->DeleteLocalRef(env, value);
+					break;
+				}
+				if (strncmp(utf, "__ERROR__:", 10) == 0) {
+					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ROM import failed: %s", utf + 10);
 					(*env)->ReleaseStringUTFChars(env, value, utf);
 					(*env)->DeleteLocalRef(env, value);
 					break;
