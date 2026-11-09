@@ -35,6 +35,4 @@ The ROM changes currently:
 
 ## Remaining game work
 
-A full audit of special scripted trainer battles is still needed. Map transitions, battle rewards, and disconnect recovery have not been verified in-game.
-
-The user requested that no build or test be run. These changes are committed to the existing repositories but have not been compiled or tested.
+A targeted source audit and CI ROM build have been completed. The latest Heart & Soul co-op ROM build is being rebuilt after the non-HNS compatibility fix. Runtime verification is still pending for special scripted trainer battles, map transitions, battle rewards, and disconnect/reconnect behavior during active battles. The Android APK and Windows relay server have separate successful CI builds; a two-phone end-to-end session has not yet been exercised.
