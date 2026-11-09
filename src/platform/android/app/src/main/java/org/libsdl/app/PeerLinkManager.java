@@ -82,6 +82,14 @@ public final class PeerLinkManager {
             }
         }
     };
+    private final Runnable pcHeartbeat = new Runnable() {
+        @Override public void run() {
+            if (pcServerMode && mqttConnected && pcHelloSent) {
+                publish(pcUpHeartbeatTopic(), new byte[0], 0, false);
+                handler.postDelayed(this, 10000);
+            }
+        }
+    };
     private final AtomicLong sendCounter = new AtomicLong(1);
     private final long[] receiveCounters = new long[] {0, 0};
     private final List<IceCandidate> pendingCandidates = new ArrayList<>();
@@ -100,6 +108,9 @@ public final class PeerLinkManager {
     private String relayHostTopic;
     private String relayJoinTopic;
     private boolean host;
+    private boolean pcServerMode;
+    private boolean pcHelloSent;
+    private String pcClientId;
     private boolean mqttConnected;
     private boolean retryEnabled;
     private boolean accepted;
@@ -139,14 +150,14 @@ public final class PeerLinkManager {
             .setNegativeButton("Play Offline", (dialog, which) -> dialog.dismiss())
             .setNeutralButton("Join", (dialog, which) -> showJoinPinDialog());
 
-        if ("host".equals(savedRole) && savedPin != null) {
-            builder.setPositiveButton("Reconnect as Host", (dialog, which) -> {
-                startHost(savedPin, prefs.getString(PREF_SESSION, null));
-            });
+        if ("pc".equals(savedRole) && savedPin != null) {
+            builder.setPositiveButton("Reconnect to PC Server", (dialog, which) -> startPcServerJoin(savedPin));
+        } else if ("host".equals(savedRole) && savedPin != null) {
+            builder.setPositiveButton("Reconnect as Host", (dialog, which) -> startHost(savedPin, prefs.getString(PREF_SESSION, null)));
         } else if ("join".equals(savedRole) && savedPin != null) {
             builder.setPositiveButton("Reconnect", (dialog, which) -> startJoin(savedPin));
         } else {
-            builder.setPositiveButton("Host", (dialog, which) -> startHost(null, null));
+            builder.setPositiveButton("PC Server", (dialog, which) -> showPcServerPinDialog());
         }
 
         AlertDialog dialog = builder.create();
@@ -173,6 +184,53 @@ public final class PeerLinkManager {
                     showMessage("Enter all four digits.");
             })
             .show();
+    }
+
+    private void showPcServerPinDialog() {
+        EditText pinInput = new EditText(activity);
+        pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(4) });
+        pinInput.setGravity(Gravity.CENTER);
+        pinInput.setTextSize(28);
+
+        new AlertDialog.Builder(activity)
+            .setTitle("Enter the PC server PIN")
+            .setView(pinInput)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Connect", (dialog, which) -> {
+                String entered = pinInput.getText().toString().trim();
+                if (entered.matches("\\d{4}"))
+                    startPcServerJoin(entered);
+                else
+                    showMessage("Enter all four digits.");
+            })
+            .show();
+    }
+
+    private void startPcServerJoin(String enteredPin) {
+        closeCurrentSession(false);
+        host = false;
+        pcServerMode = true;
+        pcHelloSent = false;
+        retryEnabled = true;
+        pin = enteredPin;
+        accepted = false;
+        directConnected = false;
+        nativeConnected = false;
+        sessionKey = null;
+
+        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        pcClientId = prefs.getString("pc_client_id", null);
+        if (pcClientId == null || pcClientId.length() < 8) {
+            pcClientId = UUID.randomUUID().toString().replace("-", "");
+            prefs.edit().putString("pc_client_id", pcClientId).apply();
+        }
+        prefs.edit().putString(PREF_ROLE, "pc").putString(PREF_PIN, pin).apply();
+
+        connectMqtt(() -> {
+            subscribe(pcRoomTopic());
+            showStatus("Connecting to PC server", "Looking for server PIN " + pin + "…");
+        });
     }
 
     private void startHost(String existingPin, String existingSession) {
@@ -234,7 +292,11 @@ public final class PeerLinkManager {
             mqtt.setCallback(new MqttCallbackExtended() {
                 @Override public void connectComplete(boolean reconnect, String serverURI) {
                     mqttConnected = true;
-                    if (host) {
+                    if (pcServerMode) {
+                        subscribe(pcRoomTopic());
+                        pcHelloSent = false;
+                        handler.removeCallbacks(pcHeartbeat);
+                    } else if (host) {
                         subscribe(toHostTopic(), relayHostTopic());
                         publishRoomAdvertisement();
                         handler.removeCallbacks(roomHeartbeat);
@@ -251,6 +313,12 @@ public final class PeerLinkManager {
                         accepted = false;
                         joinSent = false;
                         sessionKey = null;
+                    }
+                    if (pcServerMode) {
+                        accepted = false;
+                        pcHelloSent = false;
+                        sessionKey = null;
+                        handler.removeCallbacks(pcHeartbeat);
                     }
                     updateNativeConnection();
                     showStatus("Reconnecting", "Restoring the co-op connection…");
@@ -325,6 +393,16 @@ public final class PeerLinkManager {
 
     private void handleMqttMessage(String topic, byte[] payload) {
         try {
+            if (pcServerMode) {
+                if (topic.equals(pcRoomTopic())) {
+                    handlePcRoomAdvertisement(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
+                } else if (topic.equals(pcDownControlTopic())) {
+                    handlePcServerControl(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
+                } else if (topic.equals(pcDownFrameTopic())) {
+                    handleEncryptedFrame(payload);
+                }
+                return;
+            }
             if (!host && topic.equals(roomTopic())) {
                 handleRoomAdvertisement(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 return;
@@ -345,6 +423,80 @@ public final class PeerLinkManager {
                 handleEncryptedFrame(payload);
             }
         } catch (Exception ignored) {}
+    }
+
+    private void handlePcRoomAdvertisement(JSONObject advert) throws Exception {
+        if (!pcServerMode || !"pc-room".equals(advert.optString("type")))
+            return;
+        long timestamp = advert.optLong("timestamp", 0);
+        if (timestamp == 0 || System.currentTimeMillis() - timestamp > 30000)
+            return;
+
+        String incomingSession = advert.getString("session");
+        if (incomingSession.equals(sessionId) && pcHelloSent)
+            return;
+
+        sessionId = incomingSession;
+        salt = advert.getString("salt");
+        pinKey = derivePinKey(pin, hexToBytes(salt));
+        sessionKey = null;
+        accepted = false;
+        sendCounter.set(1);
+        receiveCounters[0] = receiveCounters[1] = 0;
+        ecdhKeyPair = createEcdhKeyPair();
+        subscribe(pcDownControlTopic(), pcDownFrameTopic());
+        sendPcHello();
+        showStatus("PC server found", "Authenticating with the server and waiting for the other player…");
+    }
+
+    private void sendPcHello() {
+        if (!pcServerMode || !mqttConnected || sessionId == null || pinKey == null || ecdhKeyPair == null)
+            return;
+        try {
+            String publicKey = Base64.encodeToString(ecdhKeyPair.getPublic().getEncoded(), Base64.NO_WRAP);
+            JSONObject hello = new JSONObject();
+            hello.put("type", "hello");
+            hello.put("pub", publicKey);
+            hello.put("proof", hmacText(pinKey, sessionId + "|" + pcClientId + "|" + publicKey));
+            publish(pcUpHelloTopic(), hello.toString().getBytes(StandardCharsets.UTF_8), 0, false);
+            pcHelloSent = true;
+            handler.removeCallbacks(pcHeartbeat);
+            handler.postDelayed(pcHeartbeat, 10000);
+        } catch (Exception e) {
+            showStatus("PC server connection error", e.getMessage());
+        }
+    }
+
+    private void handlePcServerControl(JSONObject envelope) throws Exception {
+        if (!pcServerMode || !sessionId.equals(envelope.optString("session")))
+            return;
+        String type = envelope.optString("type");
+        JSONObject data = envelope.optJSONObject("data");
+        if ("waiting".equals(type)) {
+            showStatus("Waiting for Petra", "The PC server is ready. Waiting for the second phone…");
+        } else if ("peer".equals(type) && data != null) {
+            String peerId = data.getString("client");
+            String peerPublicKey = data.getString("pub");
+            String proof = data.getString("proof");
+            String expected = hmacText(pinKey, sessionId + "|" + peerId + "|" + peerPublicKey);
+            if (!constantTimeEquals(expected, proof))
+                return;
+            byte[] shared = deriveSharedSecret(ecdhKeyPair, peerPublicKey);
+            sessionKey = deriveSessionKey(shared, pinKey, sessionId);
+            host = data.optInt("role", 0) == 0;
+            sendCounter.set(1);
+            receiveCounters[0] = receiveCounters[1] = 0;
+            accepted = true;
+            updateNativeConnection();
+            showStatus("Co-op connected", "Both phones are connected through your PC server.");
+        } else if ("peer-disconnected".equals(type)) {
+            accepted = false;
+            sessionKey = null;
+            updateNativeConnection();
+            showStatus("Player disconnected", "Holding the session while the other phone reconnects…");
+        } else if ("full".equals(type) || "rejected".equals(type)) {
+            showStatus("PC server refused connection", data != null ? data.optString("reason", "Unable to join this room.") : "Unable to join this room.");
+        }
     }
 
     private void handleRoomAdvertisement(JSONObject advert) throws Exception {
@@ -591,6 +743,13 @@ public final class PeerLinkManager {
             return false;
         try {
             byte[] encrypted = encryptFrame(frame);
+            if (pcServerMode) {
+                if (mqttConnected) {
+                    publish(pcUpFrameTopic(), encrypted, 0, false);
+                    return true;
+                }
+                return false;
+            }
             if (directConnected && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {
                 if (dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true)))
                     return true;
@@ -665,6 +824,15 @@ public final class PeerLinkManager {
             mqtt.publish(topic, message);
         } catch (Exception ignored) {}
     }
+
+    private String pcRootTopic() { return "hns/johto-pc/" + pin + "/" + sessionId; }
+    private String pcRoomTopic() { return "hns/johto-pc/" + pin + "/room"; }
+    private String pcUpHelloTopic() { return pcRootTopic() + "/up/" + pcClientId + "/hello"; }
+    private String pcUpHeartbeatTopic() { return pcRootTopic() + "/up/" + pcClientId + "/heartbeat"; }
+    private String pcUpFrameTopic() { return pcRootTopic() + "/up/" + pcClientId + "/frame"; }
+    private String pcUpLeaveTopic() { return pcRootTopic() + "/up/" + pcClientId + "/leave"; }
+    private String pcDownControlTopic() { return pcRootTopic() + "/down/" + pcClientId + "/control"; }
+    private String pcDownFrameTopic() { return pcRootTopic() + "/down/" + pcClientId + "/frame"; }
 
     private String roomTopic() { return "hns/johto/" + pin + "/room"; }
     private String toHostTopic() { return "hns/johto/" + pin + "/" + sessionId + "/to-host"; }
@@ -757,6 +925,9 @@ public final class PeerLinkManager {
         boolean wasConnected = nativeConnected;
         retryEnabled = false;
         handler.removeCallbacks(roomHeartbeat);
+        handler.removeCallbacks(pcHeartbeat);
+        if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
+            publish(pcUpLeaveTopic(), new byte[0], 0, false);
         if (clearPreferences && host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
             publish(roomTopic(), new byte[0], 1, true);
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
@@ -767,6 +938,8 @@ public final class PeerLinkManager {
         mqtt = null;
         mqttConnected = false;
         directConnected = false;
+        pcServerMode = false;
+        pcHelloSent = false;
         accepted = false;
         nativeConnected = false;
         sessionKey = null;
