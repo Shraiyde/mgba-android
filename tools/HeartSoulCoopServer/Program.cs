@@ -149,7 +149,13 @@ internal static class Program
         if (kind == "heartbeat")
         {
             if (Clients.TryGetValue(clientId, out var live))
+            {
+                bool restored = !live.Connected;
                 live.LastSeenUtc = DateTime.UtcNow;
+                live.Connected = true;
+                if (restored)
+                    await SendPeerDetailsIfReady();
+            }
             return;
         }
         if (kind == "leave") { await HandleLeave(clientId); return; }
@@ -205,20 +211,28 @@ internal static class Program
                 return;
             }
 
-            foreach (ClientSlot self in players)
-            {
-                ClientSlot peer = players.First(p => p.Id != self.Id);
-                await SendJson(self.Id, "peer", new
-                {
-                    client = peer.Id,
-                    pub = peer.PublicKey,
-                    proof = Hmac($"{_session}|{peer.Id}|{peer.PublicKey}"),
-                    role = self.Id == players[0].Id ? 0 : 1
-                });
-            }
-            Console.WriteLine("[room] Both players authenticated. Relay is ready.");
+            await SendPeerDetailsIfReady();
         }
         finally { Gate.Release(); }
+    }
+
+    private static async Task SendPeerDetailsIfReady()
+    {
+        ClientSlot[] players = Clients.Values.OrderBy(x => x.Id, StringComparer.Ordinal).ToArray();
+        if (players.Length != 2 || players.Any(p => !p.Connected))
+            return;
+        foreach (ClientSlot self in players)
+        {
+            ClientSlot peer = players.First(p => p.Id != self.Id);
+            await SendJson(self.Id, "peer", new
+            {
+                client = peer.Id,
+                pub = peer.PublicKey,
+                proof = Hmac($"{_session}|{peer.Id}|{peer.PublicKey}"),
+                role = self.Id == players[0].Id ? 0 : 1
+            });
+        }
+        Console.WriteLine("[room] Both players authenticated. Relay is ready.");
     }
 
     private static async Task RouteFrame(string senderId, byte[] payload)
@@ -275,7 +289,13 @@ internal static class Program
     {
         while (!token.IsCancellationRequested)
         {
-            try { await Task.Delay(TimeSpan.FromSeconds(10), token); await PublishRoomAdvertisement(); }
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), token);
+                await PublishRoomAdvertisement();
+                foreach (ClientSlot client in Clients.Values.Where(c => c.Connected))
+                    await SendJson(client.Id, "server-heartbeat", new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+            }
             catch (OperationCanceledException) { return; }
             catch (Exception ex) { Console.WriteLine("[heartbeat] " + ex.Message); }
         }
