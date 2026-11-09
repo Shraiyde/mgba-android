@@ -350,8 +350,10 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	SDL_Log("Resolving ROM core for: %s", args.fname);
 	renderer.core = mCoreFind(args.fname);
 	if (!renderer.core) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "No compatible emulator core found for selected ROM");
 		printf("Could not run game. Are you sure the file exists and is a compatible game?\n");
 		mArgumentsDeinit(&args);
 		SDL_Quit();
@@ -359,6 +361,7 @@ int main(int argc, char** argv) {
 	}
 
 	if (!renderer.core->init(renderer.core)) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Emulator core initialization failed");
 		mArgumentsDeinit(&args);
 		SDL_Quit();
 		return 1;
