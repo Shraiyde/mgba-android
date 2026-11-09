@@ -25,7 +25,7 @@ internal static class Program
         Console.WriteLine("Pokémon Heart & Soul PC Co-op Server");
         Console.WriteLine("------------------------------------");
         Console.WriteLine($"PIN: {pin}");
-        Console.WriteLine($"Broker: {broker}:1883");
+        Console.WriteLine($"Broker: {broker}:8883 (TLS)");
         Console.WriteLine("Keep this window open while playing. Press Ctrl+C to stop.");
         Console.WriteLine();
 
@@ -178,7 +178,8 @@ internal sealed class PcRelayServer
 
         var options = new MqttClientOptionsBuilder()
             .WithClientId("hns-pc-" + Guid.NewGuid().ToString("N"))
-            .WithTcpServer(_broker, 1883)
+            .WithTcpServer(_broker, 8883)
+            .WithTlsOptions(tls => tls.UseTls())
             .WithCleanSession()
             .WithKeepAlivePeriod(TimeSpan.FromSeconds(25))
             .Build();
