@@ -776,21 +776,14 @@ public final class PeerLinkManager {
             return false;
         try {
             byte[] encrypted = encryptFrame(frame);
-            if (pcServerMode) {
-                if (mqttConnected) {
-                    publish(pcUpFrameTopic(), encrypted, 1, false);
-                    return true;
-                }
-                return false;
-            }
+            if (pcServerMode)
+                return publish(pcUpFrameTopic(), encrypted, 1, false);
             if (directConnected && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {
                 if (dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true)))
                     return true;
             }
-            if (mqttConnected) {
-                publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 1, false);
-                return true;
-            }
+            if (mqttConnected)
+                return publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 1, false);
         } catch (Exception ignored) {}
         return false;
     }
@@ -847,15 +840,18 @@ public final class PeerLinkManager {
         }
     }
 
-    private void publish(String topic, byte[] payload, int qos, boolean retained) {
+    private boolean publish(String topic, byte[] payload, int qos, boolean retained) {
         if (mqtt == null || !mqtt.isConnected())
-            return;
+            return false;
         try {
             MqttMessage message = new MqttMessage(payload);
             message.setQos(qos);
             message.setRetained(retained);
             mqtt.publish(topic, message);
-        } catch (Exception ignored) {}
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private String pcRootTopic() { return "hns/johto-pc/" + pin + "/" + sessionId; }
