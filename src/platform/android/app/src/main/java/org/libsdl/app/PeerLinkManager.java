@@ -778,7 +778,7 @@ public final class PeerLinkManager {
             byte[] encrypted = encryptFrame(frame);
             if (pcServerMode) {
                 if (mqttConnected) {
-                    publish(pcUpFrameTopic(), encrypted, 0, false);
+                    publish(pcUpFrameTopic(), encrypted, 1, false);
                     return true;
                 }
                 return false;
