@@ -34,4 +34,4 @@ jobs:
         shell: pwsh
         run: |
           $tag = "coop-server-${{ github.run_number }}"
-          gh release create $tag publish/HeartSoulCoopServer.exe --repo "${{ github.repository }}" --title "Heart & Soul Co-op Server ${{ github.run_number }}" --notes "Windows x64 self-contained server executable. Start it, then enter the displayed four-digit PIN on both Android clients." --latest=false
+          gh release create $tag publish/HeartSoulCoopServer.exe --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Heart & Soul Co-op Server ${{ github.run_number }}" --notes "Windows x64 self-contained server built from commit ${{ github.sha }}. Start it, then enter the displayed four-digit PIN on both Android clients." --latest=false
