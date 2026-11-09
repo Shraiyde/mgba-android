@@ -484,13 +484,28 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             } catch (Exception ignored) {
             }
             File destination = new File(romDir, displayName);
-            try (InputStream input = getContentResolver().openInputStream(uri);
-                 FileOutputStream output = new FileOutputStream(destination)) {
-                if (input == null) throw new IllegalStateException("Unable to open selected document");
-                byte[] buffer = new byte[65536];
-                int count;
-                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-                output.flush();
+            try {
+                long copiedBytes = 0;
+                try (InputStream input = getContentResolver().openInputStream(uri);
+                     FileOutputStream output = new FileOutputStream(destination)) {
+                    if (input == null) throw new IllegalStateException("Unable to open selected document");
+                    byte[] buffer = new byte[65536];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, count);
+                        copiedBytes += count;
+                    }
+                    output.flush();
+                    output.getFD().sync();
+                }
+
+                // Publish the path only after both streams have closed and the
+                // complete staged file has been verified on disk.
+                if (!destination.isFile() || copiedBytes <= 0 || destination.length() != copiedBytes) {
+                    throw new IllegalStateException("Imported ROM is empty or incomplete");
+                }
+                Log.i(TAG, "ROM import complete: " + destination.getAbsolutePath()
+                        + " (" + copiedBytes + " bytes)");
                 pickedRomPath = destination.getAbsolutePath();
             } catch (Exception error) {
                 Log.e(TAG, "Could not import selected ROM", error);
