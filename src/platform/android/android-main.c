@@ -450,7 +450,10 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		if (!renderer->audioInitialized) {
 			// Audio is optional on Android. A missing or unavailable audio
 			// device must never prevent video and touch controls from running.
-			printf("Audio unavailable; continuing with video only: %s\\n", SDL_GetError());
+			printf("Audio unavailable; continuing with video only: %s\n", SDL_GetError());
+			MutexLock(&thread.impl->sync.audioBufferMutex);
+			thread.impl->sync.audioWait = false;
+			MutexUnlock(&thread.impl->sync.audioBufferMutex);
 		}
 		renderer->runloop(renderer, &thread);
 		if (renderer->audioInitialized)
