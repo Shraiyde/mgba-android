@@ -235,6 +235,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	struct mCoreThread* context = user;
 	SDL_Event event;
+	bool pairingDialogShown = false;
 
 	while (mCoreThreadIsActive(context)) {
 		while (SDL_PollEvent(&event)) {
@@ -260,6 +261,14 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, 0, &dest);
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
 			SDL_RenderPresent(renderer->sdlRenderer);
+
+			// Let SDL create and present its first game frame before opening an
+			// Android modal dialog. Showing it during native startup can steal
+			// window focus before the SDL surface and runloop are ready.
+			if (!pairingDialogShown) {
+				pairingDialogShown = true;
+				mAndroidPeerJniShowDialog();
+			}
 
 			int stride;
 			SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride);
@@ -433,7 +442,6 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	}
 	if (sLinkCable)
 		mAndroidLinkCableAttach(renderer->core, sLinkCable);
-	mAndroidPeerJniShowDialog();
 	mCoreAutoloadSave(renderer->core);
 	mArgumentsApplyFileLoads(args, renderer->core);
 
