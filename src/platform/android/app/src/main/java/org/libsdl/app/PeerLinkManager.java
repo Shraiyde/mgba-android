@@ -90,6 +90,21 @@ public final class PeerLinkManager {
             }
         }
     };
+    private final Runnable pcServerWatchdog = new Runnable() {
+        @Override public void run() {
+            if (pcServerMode) {
+                if (accepted && lastPcServerHeartbeatAt != 0
+                    && System.currentTimeMillis() - lastPcServerHeartbeatAt > 30000) {
+                    accepted = false;
+                    sessionKey = null;
+                    lastPcServerHeartbeatAt = 0;
+                    updateNativeConnection();
+                    showStatus("PC server offline", "The PC server stopped responding. Waiting for it to reconnect…");
+                }
+                handler.postDelayed(this, 10000);
+            }
+        }
+    };
     private final AtomicLong sendCounter = new AtomicLong(1);
     private final long[] receiveCounters = new long[] {0, 0};
     private final List<IceCandidate> pendingCandidates = new ArrayList<>();
@@ -110,6 +125,7 @@ public final class PeerLinkManager {
     private boolean host;
     private boolean pcServerMode;
     private boolean pcHelloSent;
+    private long lastPcServerHeartbeatAt;
     private String pcClientId;
     private boolean mqttConnected;
     private boolean retryEnabled;
@@ -296,6 +312,8 @@ public final class PeerLinkManager {
                         subscribe(pcRoomTopic());
                         pcHelloSent = false;
                         handler.removeCallbacks(pcHeartbeat);
+                        handler.removeCallbacks(pcServerWatchdog);
+                        handler.postDelayed(pcServerWatchdog, 10000);
                     } else if (host) {
                         subscribe(toHostTopic(), relayHostTopic());
                         publishRoomAdvertisement();
@@ -432,6 +450,7 @@ public final class PeerLinkManager {
         if (timestamp == 0 || System.currentTimeMillis() - timestamp > 30000)
             return;
 
+        lastPcServerHeartbeatAt = System.currentTimeMillis();
         String incomingSession = advert.getString("session");
         if (incomingSession.equals(sessionId) && pcHelloSent)
             return;
@@ -472,7 +491,9 @@ public final class PeerLinkManager {
             return;
         String type = envelope.optString("type");
         JSONObject data = envelope.optJSONObject("data");
-        if ("waiting".equals(type)) {
+        if ("server-heartbeat".equals(type)) {
+            lastPcServerHeartbeatAt = System.currentTimeMillis();
+        } else if ("waiting".equals(type)) {
             showStatus("Waiting for Petra", "The PC server is ready. Waiting for the second phone…");
         } else if ("peer".equals(type) && data != null) {
             String peerId = data.getString("client");
@@ -926,6 +947,7 @@ public final class PeerLinkManager {
         retryEnabled = false;
         handler.removeCallbacks(roomHeartbeat);
         handler.removeCallbacks(pcHeartbeat);
+        handler.removeCallbacks(pcServerWatchdog);
         if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
             publish(pcUpLeaveTopic(), new byte[0], 0, false);
         if (clearPreferences && host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
