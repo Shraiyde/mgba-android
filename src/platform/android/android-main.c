@@ -34,8 +34,8 @@ static struct mAndroidLinkCable* sLinkCable;
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 6
-#define HNS_COOP_MAILBOX_SIZE 2120
+#define HNS_COOP_MAILBOX_VERSION 7
+#define HNS_COOP_MAILBOX_SIZE 2124
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define HNS_COOP_VAR_QUEUE_SIZE 128
 #define GBA_EWRAM_START 0x02000000
@@ -93,6 +93,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		core->busWrite32(core, sCoopMailboxAddress + 8, connected ? 1 : 0);
 		if (!connected) {
 			core->busWrite32(core, sCoopMailboxAddress + 2112, 0);
+			core->busWrite32(core, sCoopMailboxAddress + 2120, 0);
 			sCoopLastMapSent = UINT32_MAX;
 			sCoopLastSioActive = UINT32_MAX;
 		}
@@ -151,6 +152,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					memcpy(networkState, peerEvent.data, sizeof(networkState));
 					core->busWrite32(core, sCoopMailboxAddress + 2108, ntohl(networkState[0]));
 					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);
+					core->busWrite32(core, sCoopMailboxAddress + 2120, ntohl(networkState[1]) ? 1 : 0);
 					continue;
 				}
 				if (peerEvent.size != sizeof(uint32_t))
