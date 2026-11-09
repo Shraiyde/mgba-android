@@ -61,6 +61,7 @@ struct mSDLRenderer {
 	bool lockIntegerScaling;
 	bool interframeBlending;
 	bool filter;
+	bool audioInitialized;
 
 #ifdef BUILD_GL
 	struct mGLContext gl;
