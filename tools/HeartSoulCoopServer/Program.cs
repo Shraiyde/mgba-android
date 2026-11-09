@@ -148,6 +148,8 @@ internal static class Program
         if (kind == "hello") { await HandleHello(clientId, payload); return; }
         if (kind == "heartbeat")
         {
+            if (!VerifyClientSignal(clientId, "heartbeat", payload))
+                return;
             if (Clients.TryGetValue(clientId, out var live))
             {
                 bool restored = !live.Connected;
@@ -158,7 +160,12 @@ internal static class Program
             }
             return;
         }
-        if (kind == "leave") { await HandleLeave(clientId); return; }
+        if (kind == "leave")
+        {
+            if (VerifyClientSignal(clientId, "leave", payload))
+                await HandleLeave(clientId);
+            return;
+        }
         if (kind == "frame") await RouteFrame(clientId, payload);
     }
 
@@ -330,6 +337,24 @@ internal static class Program
             }
             catch (OperationCanceledException) { return; }
         }
+    }
+
+    private static bool VerifyClientSignal(string clientId, string action, byte[] payload)
+    {
+        string value = Encoding.UTF8.GetString(payload);
+        int separator = value.IndexOf('|');
+        if (separator <= 0)
+            return false;
+
+        if (!long.TryParse(value[..separator], out long timestamp))
+            return false;
+
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (timestamp < now - 30_000 || timestamp > now + 30_000)
+            return false;
+
+        string proof = value[(separator + 1)..];
+        return FixedEquals(Hmac($"{_session}|{clientId}|{action}|{timestamp}"), proof);
     }
 
     private static string Hmac(string value)
