@@ -449,14 +449,22 @@ public final class PeerLinkManager {
         if (timestamp == 0 || System.currentTimeMillis() - timestamp > 30000)
             return;
 
-        lastPcServerHeartbeatAt = System.currentTimeMillis();
+        long advertTimestamp = advert.optLong("timestamp", 0);
         String incomingSession = advert.getString("session");
+        String incomingSalt = advert.getString("salt");
+        byte[] candidatePinKey = derivePinKey(pin, hexToBytes(incomingSalt));
+        String expectedProof = hmacText(candidatePinKey,
+            incomingSession + "|" + incomingSalt + "|" + advertTimestamp);
+        if (!constantTimeEquals(expectedProof, advert.optString("proof")))
+            return;
+
+        lastPcServerHeartbeatAt = System.currentTimeMillis();
         if (incomingSession.equals(sessionId) && pcHelloSent)
             return;
 
         sessionId = incomingSession;
-        salt = advert.getString("salt");
-        pinKey = derivePinKey(pin, hexToBytes(salt));
+        salt = incomingSalt;
+        pinKey = candidatePinKey;
         sessionKey = null;
         accepted = false;
         updateNativeConnection();
