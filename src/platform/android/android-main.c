@@ -101,6 +101,8 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		if (connected) {
 			uint32_t localMapId = core->busRead32(core, sCoopMailboxAddress + 2104);
 			uint32_t localSioActive = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
+			if (localSioActive != sCoopLastSioActive)
+				mPeerLinkSetLocalSioActive(sPeerLink, localSioActive != 0);
 			if (localMapId != sCoopLastMapSent || localSioActive != sCoopLastSioActive || frame % 30 == 0) {
 				uint32_t networkState[2] = { htonl(localMapId), htonl(localSioActive) };
 				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, sizeof(networkState))) {
