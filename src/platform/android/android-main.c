@@ -83,6 +83,14 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	if (!core || !core->busRead32 || !core->busRead16 || !core->busWrite32)
 		return;
 
+	bool connected = sPeerLink && mPeerLinkIsConnected(sPeerLink);
+	// Keep the normal single-player emulator path completely independent of
+	// the co-op mailbox. Only discover a game mailbox after a peer connects.
+	// If a known session disconnects, continue one-way updates so the game
+	// receives its disconnected state.
+	if (!connected && !sCoopMailboxAddress)
+		return;
+
 	uint32_t frame = core->frameCounter ? core->frameCounter(core) : 0;
 	if (!sCoopMailboxAddress && frame >= sCoopMailboxNextScan) {
 		sCoopMailboxNextScan = frame + 30;
@@ -98,7 +106,6 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	}
 
 	if (sCoopMailboxAddress) {
-		bool connected = mPeerLinkIsConnected(sPeerLink);
 		core->busWrite32(core, sCoopMailboxAddress + 8, connected ? 1 : 0);
 		core->busWrite32(core, sCoopMailboxAddress + 2124, sCoopHostRole ? 1 : 0);
 		if (!connected) {
