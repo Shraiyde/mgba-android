@@ -1,0 +1,37 @@
+name: Build Heart & Soul Co-op Server
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'tools/HeartSoulCoopServer/**'
+      - '.github/workflows/build-coop-server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-server:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish self-contained Windows executable
+        shell: pwsh
+        run: |
+          dotnet publish tools/HeartSoulCoopServer/HeartSoulCoopServer.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false --output publish
+
+      - name: Create GitHub Release with EXE
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "coop-server-${{ github.run_number }}"
+          gh release create $tag publish/HeartSoulCoopServer.exe --repo "${{ github.repository }}" --title "Heart & Soul Co-op Server ${{ github.run_number }}" --notes "Windows x64 self-contained server executable. Start it, then enter the displayed four-digit PIN on both Android clients." --latest=false
