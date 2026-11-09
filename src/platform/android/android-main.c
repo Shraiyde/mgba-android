@@ -246,7 +246,35 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			mSDLHandleEvent(context, &renderer->player, &event);
 		}
 
-		if (mCoreSyncWaitFrameStart(&context->impl->sync)) {
+		if (!mCoreSyncWaitFrameStart(&context->impl->sync)) {
+			// Keep the Android controls visible even before the GBA core has
+			// produced its first frame (or while video sync is waiting).
+			// Release the sync mutex before doing SDL work so the core thread
+			// can post its first frame without waiting for the UI renderer.
+			mCoreSyncWaitFrameEnd(&context->impl->sync);
+
+			SDL_Rect dest;
+			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
+			dest.h = renderer->viewportHeight;
+			if (dest.w > renderer->viewportWidth) {
+				dest.w = renderer->viewportWidth;
+				dest.h = renderer->viewportWidth * renderer->height / renderer->width;
+			}
+			dest.x = (renderer->viewportWidth - dest.w) / 2;
+			dest.y = (renderer->viewportHeight - dest.h) / 2;
+
+			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
+			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {
+				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android idle screen clear failed: %s", SDL_GetError());
+			}
+			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
+			SDL_RenderPresent(renderer->sdlRenderer);
+			SDL_Delay(16);
+			mSDLAndroidUpdateCoopMailbox(renderer->core);
+			continue;
+		}
+
+		{
 			SDL_UnlockTexture(renderer->sdlTex);
 
 			SDL_Rect dest;
