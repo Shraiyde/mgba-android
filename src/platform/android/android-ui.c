@@ -235,6 +235,27 @@ static struct {
 	} touches[MAX_TOUCHES];
 } overlay;
 
+static struct {
+	SDL_Renderer* renderer;
+	SDL_Surface* surface;
+	SDL_Texture* texture;
+	int width;
+	int height;
+} overlayCache;
+
+static void _freeOverlayCache(void) {
+	if (overlayCache.texture) {
+		SDL_DestroyTexture(overlayCache.texture);
+		overlayCache.texture = NULL;
+	}
+	if (overlayCache.surface) {
+		SDL_FreeSurface(overlayCache.surface);
+		overlayCache.surface = NULL;
+	}
+	overlayCache.renderer = NULL;
+	overlayCache.width = overlayCache.height = 0;
+}
+
 static void _pushKey(SDL_Keycode key, bool down) {
 	SDL_Event event;
 	SDL_memset(&event, 0, sizeof(event));
@@ -373,6 +394,9 @@ static const SDL_Rect* _toggleRect(void) {
 }
 
 void mAndroidOverlaySetWindow(SDL_Window* window) {
+	if (overlay.window != window) {
+		_freeOverlayCache();
+	}
 	overlay.window = window;
 }
 
@@ -462,12 +486,12 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 }
 
 void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
-	if (!overlay.window) {
+	if (!overlay.window || !renderer) {
 		return;
 	}
 	const SDL_Rect* toggle = _toggleRect();
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-	SDL_SetRenderDrawColor(renderer, 200, 200, 200, 90);
+	SDL_SetRenderDrawColor(renderer, 200, 200, 200, 150);
 	SDL_RenderFillRect(renderer, toggle);
 
 	if (overlay.hidden) {
@@ -477,25 +501,48 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	int n = _layout(view, buttons);
 	int i;
 	for (i = 0; i < n; ++i) {
-		SDL_SetRenderDrawColor(renderer, 235, 235, 235, 100);
+		SDL_SetRenderDrawColor(renderer, 235, 235, 235, 125);
 		SDL_RenderFillRect(renderer, &buttons[i].rect);
-		SDL_SetRenderDrawColor(renderer, 255, 255, 255, 170);
+		SDL_SetRenderDrawColor(renderer, 255, 255, 255, 210);
 		SDL_RenderDrawRect(renderer, &buttons[i].rect);
 	}
 
-	// Labels, drawn via a small overlay surface
 	int w, h;
 	SDL_GetWindowSize(overlay.window, &w, &h);
-	SDL_Surface* surf = _makeSurface(w, h);
-	Uint32 white = SDL_MapRGBA(surf->format, 0xFF, 0xFF, 0xFF, 0xC0);
+	if (w <= 0 || h <= 0) {
+		return;
+	}
+	if (overlayCache.renderer != renderer || overlayCache.width != w || overlayCache.height != h) {
+		_freeOverlayCache();
+		overlayCache.renderer = renderer;
+		overlayCache.width = w;
+		overlayCache.height = h;
+		overlayCache.surface = _makeSurface(w, h);
+		if (overlayCache.surface) {
+			overlayCache.texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
+				SDL_TEXTUREACCESS_STREAMING, w, h);
+		}
+		if (!overlayCache.surface || !overlayCache.texture) {
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay allocation failed: %s", SDL_GetError());
+			_freeOverlayCache();
+			return;
+		}
+		SDL_SetTextureBlendMode(overlayCache.texture, SDL_BLENDMODE_BLEND);
+	}
+	SDL_Surface* surf = overlayCache.surface;
+	Uint32 transparent = SDL_MapRGBA(surf->format, 0, 0, 0, 0);
+	SDL_FillRect(surf, NULL, transparent);
+	Uint32 white = SDL_MapRGBA(surf->format, 0xFF, 0xFF, 0xFF, 0xF0);
 	for (i = 0; i < n; ++i) {
 		int tx = buttons[i].rect.x + (buttons[i].rect.w - 8 * 2) / 2;
 		int ty = buttons[i].rect.y + (buttons[i].rect.h - 8 * 2) / 2;
 		_blitText(surf, buttons[i].label, tx, ty, 2, white);
 	}
-	SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer, surf);
-	SDL_FreeSurface(surf);
-	SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-	SDL_RenderCopy(renderer, tex, NULL, NULL);
-	SDL_DestroyTexture(tex);
+	if (SDL_UpdateTexture(overlayCache.texture, NULL, surf->pixels, surf->pitch) < 0) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay texture update failed: %s", SDL_GetError());
+		return;
+	}
+	if (SDL_RenderCopy(renderer, overlayCache.texture, NULL, NULL) < 0) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay draw failed: %s", SDL_GetError());
+	}
 }
