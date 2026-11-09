@@ -15,7 +15,7 @@ The server forwards opaque encrypted frames. It does not load ROMs, read save fi
 
 ## Network requirements
 
-The server makes an **outbound** MQTT connection to `broker.emqx.io:1883`. The Android clients use the broker's secure WebSocket endpoint. No inbound router ports, port forwarding, public IP, or Tailscale setup is required.
+The server makes an **outbound** MQTT connection to `broker.emqx.io:8883`. The Android clients use the broker's secure WebSocket endpoint. No inbound router ports, port forwarding, public IP, or Tailscale setup is required.
 
 Both phones and the PC need internet access. The relay depends on the public EMQX broker being available.
 
