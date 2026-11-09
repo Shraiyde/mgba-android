@@ -21,7 +21,7 @@ The PC makes an outbound MQTT connection to the public EMQX broker; the phones u
 
 ## Heart & Soul ROM integration
 
-The ROM exposes a versioned EWRAM mailbox identified by `COOP` magic. The Android frontend writes peer-connected state into it, relays shared story flags and variables, exchanges map IDs, and acknowledges the initial story snapshot. The game starts its existing GBA link protocol and returns to the field in link mode. Co-op trainer battles are enabled only while both peers report the same map.
+The ROM exposes a version 6 EWRAM mailbox identified by `COOP` magic. The Android frontend writes peer-connected state into it, relays shared story flags and variables, exchanges map IDs and whether each game is actively running the link field protocol, and acknowledges the initial story snapshot. The game starts its existing GBA link protocol and returns to the field in link mode. Co-op trainer battles are enabled only while both peers report the same map. During solo wild or scripted battles, the battle side advertises that it is not exchanging overworld SIO input, so the other player does not wait on a missing serial transfer; the network session remains connected.
 
 The ROM changes currently:
 - Spawn and update the existing link-player objects in the overworld
