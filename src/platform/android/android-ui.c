@@ -467,7 +467,7 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	}
 	const SDL_Rect* toggle = _toggleRect();
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-	SDL_SetRenderDrawColor(renderer, 200, 200, 200, 32);
+	SDL_SetRenderDrawColor(renderer, 200, 200, 200, 90);
 	SDL_RenderFillRect(renderer, toggle);
 
 	if (overlay.hidden) {
@@ -477,9 +477,9 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	int n = _layout(view, buttons);
 	int i;
 	for (i = 0; i < n; ++i) {
-		SDL_SetRenderDrawColor(renderer, 235, 235, 235, 48);
+		SDL_SetRenderDrawColor(renderer, 235, 235, 235, 100);
 		SDL_RenderFillRect(renderer, &buttons[i].rect);
-		SDL_SetRenderDrawColor(renderer, 255, 255, 255, 96);
+		SDL_SetRenderDrawColor(renderer, 255, 255, 255, 170);
 		SDL_RenderDrawRect(renderer, &buttons[i].rect);
 	}
 
