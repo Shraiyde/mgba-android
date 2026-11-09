@@ -96,6 +96,7 @@ public final class PeerLinkManager {
                 if (accepted && lastPcServerHeartbeatAt != 0
                     && System.currentTimeMillis() - lastPcServerHeartbeatAt > 30000) {
                     accepted = false;
+                    pcHelloSent = false;
                     sessionKey = null;
                     lastPcServerHeartbeatAt = 0;
                     updateNativeConnection();
@@ -969,8 +970,14 @@ public final class PeerLinkManager {
         pendingCandidates.clear();
         sendCounter.set(1);
         receiveCounters[0] = receiveCounters[1] = 0;
-        if (clearPreferences && activity != null)
-            activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
+        if (clearPreferences && activity != null) {
+            SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            String persistentPcClientId = prefs.getString("pc_client_id", null);
+            SharedPreferences.Editor editor = prefs.edit().clear();
+            if (persistentPcClientId != null)
+                editor.putString("pc_client_id", persistentPcClientId);
+            editor.apply();
+        }
         if (wasConnected)
             nativePeerDisconnected();
     }
