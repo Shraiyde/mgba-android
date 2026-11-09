@@ -46,12 +46,14 @@ static uint32_t sCoopMailboxNextScan;
 static uint32_t sCoopLastMapSent = UINT32_MAX;
 static uint32_t sCoopLastSioActive = UINT32_MAX;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
+static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static bool sCoopHostRole;
 
 void mAndroidPeerLinkSetConnected(bool host) {
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
 	sCoopLastConfigFrame = UINT32_MAX;
+	sCoopLastConfigSequence = UINT32_MAX;
 	sCoopHostRole = host;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
@@ -65,6 +67,7 @@ void mAndroidPeerLinkSetDisconnected(void) {
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
 	sCoopLastConfigFrame = UINT32_MAX;
+	sCoopLastConfigSequence = UINT32_MAX;
 	sCoopHostRole = false;
 	if (sPeerLink)
 		mPeerLinkSetConnected(sPeerLink, false);
@@ -109,14 +112,18 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		if (connected) {
             if (sCoopHostRole) {
                 uint32_t configReady = core->busRead32(core, sCoopMailboxAddress + 2140);
-                if (configReady && (sCoopLastConfigFrame == UINT32_MAX || frame - sCoopLastConfigFrame >= 60)) {
-                    uint32_t config[3] = {
+                if (configReady && (configReady != sCoopLastConfigSequence
+                    || sCoopLastConfigFrame == UINT32_MAX || frame - sCoopLastConfigFrame >= 60)) {
+                    uint32_t config[4] = {
                         htonl(core->busRead32(core, sCoopMailboxAddress + 2128)),
                         htonl(core->busRead32(core, sCoopMailboxAddress + 2132)),
-                        htonl(core->busRead32(core, sCoopMailboxAddress + 2136))
+                        htonl(core->busRead32(core, sCoopMailboxAddress + 2136)),
+                        htonl(configReady)
                     };
-                    if (mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_CONFIG, config, sizeof(config)))
+                    if (mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_CONFIG, config, sizeof(config))) {
                         sCoopLastConfigFrame = frame;
+                        sCoopLastConfigSequence = configReady;
+                    }
                 }
             }
 			uint32_t localMapId = core->busRead32(core, sCoopMailboxAddress + 2104);
@@ -169,21 +176,22 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			while (mPeerLinkPoll(sPeerLink, &peerEvent)) {
 				if (peerEvent.type != mPEER_EVENT_MESSAGE)
 					continue;
-                if (peerEvent.messageType == mPEER_MSG_WORLD_CONFIG && !sCoopHostRole && peerEvent.size == 3 * sizeof(uint32_t)) {
-                    uint32_t config[3];
+                if (peerEvent.messageType == mPEER_MSG_WORLD_CONFIG && !sCoopHostRole && peerEvent.size == 4 * sizeof(uint32_t)) {
+                    uint32_t config[4];
                     memcpy(config, peerEvent.data, sizeof(config));
                     core->busWrite32(core, sCoopMailboxAddress + 2144, ntohl(config[0]));
                     core->busWrite32(core, sCoopMailboxAddress + 2148, ntohl(config[1]));
                     core->busWrite32(core, sCoopMailboxAddress + 2152, ntohl(config[2]));
-                    uint32_t sequence = core->busRead32(core, sCoopMailboxAddress + 2156) + 1;
-                    if (!sequence) sequence = 1;
+                    uint32_t sequence = ntohl(config[3]);
                     core->busWrite32(core, sCoopMailboxAddress + 2156, sequence);
                     uint32_t ack = htonl(sequence);
                     mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_CONFIG_ACK, &ack, sizeof(ack));
                     continue;
                 }
                 if (peerEvent.messageType == mPEER_MSG_WORLD_CONFIG_ACK && sCoopHostRole && peerEvent.size == sizeof(uint32_t)) {
-                    core->busWrite32(core, sCoopMailboxAddress + 2156, 1);
+                    uint32_t networkSequence;
+                    memcpy(&networkSequence, peerEvent.data, sizeof(networkSequence));
+                    core->busWrite32(core, sCoopMailboxAddress + 2156, ntohl(networkSequence));
                     continue;
                 }
 				if (peerEvent.messageType == mPEER_MSG_POSITION && peerEvent.size == 2 * sizeof(uint32_t)) {
