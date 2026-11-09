@@ -85,7 +85,7 @@ public final class PeerLinkManager {
     private final Runnable pcHeartbeat = new Runnable() {
         @Override public void run() {
             if (pcServerMode && mqttConnected && pcHelloSent) {
-                publish(pcUpHeartbeatTopic(), new byte[0], 0, false);
+                publish(pcUpHeartbeatTopic(), pcAuthSignal("heartbeat"), 0, false);
                 handler.postDelayed(this, 10000);
             }
         }
@@ -864,6 +864,17 @@ public final class PeerLinkManager {
         }
     }
 
+    private byte[] pcAuthSignal(String action) {
+        try {
+            long timestamp = System.currentTimeMillis();
+            String proof = hmacText(pinKey,
+                sessionId + "|" + pcClientId + "|" + action + "|" + timestamp);
+            return (timestamp + "|" + proof).getBytes(StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            return new byte[0];
+        }
+    }
+
     private String pcRootTopic() { return "hns/johto-pc/" + pin + "/" + sessionId; }
     private String pcRoomTopic() { return "hns/johto-pc/" + pin + "/room"; }
     private String pcUpHelloTopic() { return pcRootTopic() + "/up/" + pcClientId + "/hello"; }
@@ -967,7 +978,7 @@ public final class PeerLinkManager {
         handler.removeCallbacks(pcHeartbeat);
         handler.removeCallbacks(pcServerWatchdog);
         if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
-            publish(pcUpLeaveTopic(), new byte[0], 0, false);
+            publish(pcUpLeaveTopic(), pcAuthSignal("leave"), 0, false);
         if (clearPreferences && host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
             publish(roomTopic(), new byte[0], 1, true);
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
