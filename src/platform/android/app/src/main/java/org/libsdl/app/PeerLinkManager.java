@@ -164,17 +164,20 @@ public final class PeerLinkManager {
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
             .setTitle("Heart & Soul Co-op")
             .setMessage("Connect the two phones with a four-digit PIN.")
-            .setNegativeButton("Play Offline", (dialog, which) -> dialog.dismiss())
-            .setNeutralButton("Join", (dialog, which) -> showJoinPinDialog());
+            .setNegativeButton("Play Offline", (dialog, which) -> dialog.dismiss());
 
         if ("pc".equals(savedRole) && savedPin != null) {
             builder.setPositiveButton("Reconnect to PC Server", (dialog, which) -> startPcServerJoin(savedPin));
-        } else if ("host".equals(savedRole) && savedPin != null) {
-            builder.setPositiveButton("Reconnect as Host", (dialog, which) -> startHost(savedPin, prefs.getString(PREF_SESSION, null)));
-        } else if ("join".equals(savedRole) && savedPin != null) {
-            builder.setPositiveButton("Reconnect", (dialog, which) -> startJoin(savedPin));
+            builder.setNeutralButton("Change PC PIN", (dialog, which) -> showPcServerPinDialog());
         } else {
-            builder.setPositiveButton("PC Server", (dialog, which) -> showPcServerPinDialog());
+            builder.setNeutralButton("Join", (dialog, which) -> showJoinPinDialog());
+            if ("host".equals(savedRole) && savedPin != null) {
+                builder.setPositiveButton("Reconnect as Host", (dialog, which) -> startHost(savedPin, prefs.getString(PREF_SESSION, null)));
+            } else if ("join".equals(savedRole) && savedPin != null) {
+                builder.setPositiveButton("Reconnect", (dialog, which) -> startJoin(savedPin));
+            } else {
+                builder.setPositiveButton("PC Server", (dialog, which) -> showPcServerPinDialog());
+            }
         }
 
         AlertDialog dialog = builder.create();
