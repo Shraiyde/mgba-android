@@ -759,7 +759,11 @@ public final class PeerLinkManager {
     }
 
     private boolean verifySignal(String type, String value, String mac) {
-        return constantTimeEquals(hmacText(sessionKey, sessionId + "|" + type + "|" + value), mac);
+        try {
+            return constantTimeEquals(hmacText(sessionKey, sessionId + "|" + type + "|" + value), mac);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     public static boolean sendFrame(byte[] frame) {
