@@ -460,6 +460,7 @@ public final class PeerLinkManager {
         pinKey = derivePinKey(pin, hexToBytes(salt));
         sessionKey = null;
         accepted = false;
+        updateNativeConnection();
         sendCounter.set(1);
         receiveCounters[0] = receiveCounters[1] = 0;
         ecdhKeyPair = createEcdhKeyPair();
