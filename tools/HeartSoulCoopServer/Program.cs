@@ -305,15 +305,15 @@ internal static class Program
     private static string Hmac(string value)
     {
         using var hmac = new HMACSHA256(_pinKey);
-        return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        return Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(value)));
     }
 
     private static bool FixedEquals(string a, string b)
     {
         try
         {
-            byte[] left = Convert.FromHexString(a);
-            byte[] right = Convert.FromHexString(b);
+            byte[] left = Encoding.UTF8.GetBytes(a);
+            byte[] right = Encoding.UTF8.GetBytes(b);
             return left.Length == right.Length && CryptographicOperations.FixedTimeEquals(left, right);
         }
         catch { return false; }
