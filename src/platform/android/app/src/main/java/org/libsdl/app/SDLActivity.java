@@ -494,7 +494,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                 pickedRomPath = destination.getAbsolutePath();
             } catch (Exception error) {
                 Log.e(TAG, "Could not import selected ROM", error);
-                pickedRomPath = "__CANCELLED__";
+                pickedRomPath = "__ERROR__:" + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
+                final String errorText = "Could not import ROM: " + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
+                runOnUiThread(() -> Toast.makeText(SDLActivity.this, errorText, Toast.LENGTH_LONG).show());
             }
         }, "ROM-Import").start();
     }
