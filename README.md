@@ -5,7 +5,7 @@ mGBA is an emulator for running Game Boy Advance games. It aims to be faster and
 
 Up-to-date news and downloads can be found at [mgba.io](https://mgba.io/).
 > **Android:** this fork ships a real Android port (touch controls, ROM browser). See [`src/platform/android/README.md`](src/platform/android/README.md) and the [Releases](https://github.com/Gitsnup/mgba-android/releases) page for a ready-made APK.
-> **Heart & Soul co-op:** the Windows PC relay server and build instructions are in [`server/windows/README.md`](server/windows/README.md).
+> **Heart & Soul co-op:** the Windows PC relay server and build instructions are in [`tools/HeartSoulCoopServer/README.md`](tools/HeartSoulCoopServer/README.md).
 
 [![Build status](https://buildbot.mgba.io/badges/build-win32.svg)](https://buildbot.mgba.io)
 [![Translation status](https://hosted.weblate.org/widgets/mgba/-/svg-badge.svg)](https://hosted.weblate.org/engage/mgba)
