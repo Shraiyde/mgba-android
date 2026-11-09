@@ -485,7 +485,7 @@ public final class PeerLinkManager {
             hello.put("type", "hello");
             hello.put("pub", publicKey);
             hello.put("proof", hmacText(pinKey, sessionId + "|" + pcClientId + "|" + publicKey));
-            publish(pcUpHelloTopic(), hello.toString().getBytes(StandardCharsets.UTF_8), 0, false);
+            publish(pcUpHelloTopic(), hello.toString().getBytes(StandardCharsets.UTF_8), 1, false);
             pcHelloSent = true;
             handler.removeCallbacks(pcHeartbeat);
             handler.postDelayed(pcHeartbeat, 10000);
