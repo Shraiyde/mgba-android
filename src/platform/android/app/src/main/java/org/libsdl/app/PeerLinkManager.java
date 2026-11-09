@@ -1008,7 +1008,7 @@ public final class PeerLinkManager {
             current.runOnUiThread(() -> new AlertDialog.Builder(current).setMessage(message).setPositiveButton("OK", null).show());
     }
 
-    private static final class SimpleSdpObserver implements SdpObserver {
+    private static class SimpleSdpObserver implements SdpObserver {
         @Override public void onCreateSuccess(SessionDescription description) {}
         @Override public void onSetSuccess() {}
         @Override public void onCreateFailure(String error) {}
