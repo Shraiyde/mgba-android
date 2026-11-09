@@ -1,0 +1,60 @@
+name: Build Android co-op APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'src/platform/android/**'
+      - 'src/core/**'
+      - 'src/gba/**'
+      - 'src/gb/**'
+      - 'src/third-party/**'
+      - 'CMakeLists.txt'
+      - 'version.cmake'
+      - '.github/workflows/build-android-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out mGBA fork
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 ndk;26.3.11579264 cmake;3.22.1'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Fetch SDL2 source
+        run: |
+          git clone --depth 1 --branch release-2.30.11 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL2"
+
+      - name: Build installable arm64 APK
+        working-directory: src/platform/android
+        env:
+          SDL2_SRC: ${{ runner.temp }}/SDL2
+        run: ./build-apk.sh
+
+      - name: Publish APK as a GitHub Release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-coop-${{ github.run_number }}
+          name: Heart & Soul Co-op Android Build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: src/platform/android/app/build/outputs/apk/debug/app-debug.apk
