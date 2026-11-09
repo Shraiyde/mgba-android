@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using MQTTnet;
 using MQTTnet.Client;
 using MQTTnet.Protocol;
@@ -68,6 +69,8 @@ internal sealed class PcRelayServer
     private readonly byte[] _pinKey;
     private readonly object _gate = new();
     private readonly List<PhoneClient> _phones = new(2);
+    private readonly Channel<InboundMessage> _incoming = Channel.CreateUnbounded<InboundMessage>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private IMqttClient? _mqtt;
     private DateTimeOffset _lastAdvertisement = DateTimeOffset.MinValue;
     private DateTimeOffset _lastServerHeartbeat = DateTimeOffset.MinValue;
@@ -86,6 +89,9 @@ internal sealed class PcRelayServer
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
+        Task inboundWorker = ProcessIncomingMessagesAsync(cancellationToken);
+        try
+        {
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -132,16 +138,43 @@ internal sealed class PcRelayServer
                 await Task.Delay(3000, cancellationToken);
             }
         }
+        }
+        finally
+        {
+            _incoming.Writer.TryComplete();
+            try { await inboundWorker; } catch (OperationCanceledException) { }
+        }
 
         try { await RemoveRoomAdvertisementAsync(); } catch { }
         Console.WriteLine("Server stopped.");
+    }
+
+    private async Task ProcessIncomingMessagesAsync(CancellationToken cancellationToken)
+    {
+        await foreach (InboundMessage message in _incoming.Reader.ReadAllAsync(cancellationToken))
+        {
+            try
+            {
+                await HandleMessageAsync(message.Topic, message.Payload, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ignored malformed relay message: {ex.Message}");
+            }
+        }
     }
 
     private async Task ConnectAsync(CancellationToken cancellationToken)
     {
         var factory = new MqttFactory();
         var client = factory.CreateMqttClient();
-        client.ApplicationMessageReceivedAsync += e => HandleMessageAsync(e, cancellationToken);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            _incoming.Writer.TryWrite(new InboundMessage(
+                e.ApplicationMessage.Topic,
+                e.ApplicationMessage.PayloadSegment.ToArray()));
+            return Task.CompletedTask;
+        };
 
         var options = new MqttClientOptionsBuilder()
             .WithClientId("hns-pc-" + Guid.NewGuid().ToString("N"))
@@ -161,9 +194,9 @@ internal sealed class PcRelayServer
             cancellationToken);
     }
 
-    private async Task HandleMessageAsync(MqttApplicationMessageReceivedEventArgs e, CancellationToken cancellationToken)
+    private async Task HandleMessageAsync(string topic, byte[] payload, CancellationToken cancellationToken)
     {
-        string[] parts = e.ApplicationMessage.Topic.Split('/');
+        string[] parts = topic.Split('/');
         if (parts.Length != 7 || parts[0] != "hns" || parts[1] != "johto-pc"
             || parts[2] != _pin || parts[3] != _session || parts[4] != "up")
             return;
@@ -173,7 +206,6 @@ internal sealed class PcRelayServer
         if (clientId.Length is < 8 or > 64 || clientId.Any(c => !char.IsAsciiLetterOrDigit(c)))
             return;
 
-        byte[] payload = e.ApplicationMessage.PayloadSegment.ToArray();
         switch (action)
         {
             case "hello":
@@ -421,6 +453,8 @@ internal sealed class PcRelayServer
             return;
         await PublishAsync(RoomTopic, Array.Empty<byte>(), retained: true, CancellationToken.None);
     }
+
+    private sealed record InboundMessage(string Topic, byte[] Payload);
 
     private sealed class PhoneClient(string id, string publicKey, string proof, DateTimeOffset lastSeen)
     {
