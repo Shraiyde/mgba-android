@@ -116,8 +116,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			// Keep advertising readiness until the peer confirms its initial
 			// story-state transfer is also complete.
 			uint32_t localReady = core->busRead32(core, sCoopMailboxAddress + 2096);
-			uint32_t remoteReady = core->busRead32(core, sCoopMailboxAddress + 2100);
-			if (localReady && !remoteReady && frame % 60 == 0) {
+			if (localReady && frame % 60 == 0) {
 				uint32_t ready = htonl(1);
 				mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_READY, &ready, sizeof(ready));
 			}
