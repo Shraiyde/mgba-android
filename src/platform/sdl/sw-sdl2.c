@@ -28,8 +28,25 @@ bool mSDLSWInit(struct mSDLRenderer* renderer) {
 	SDL_SetRenderVSync(renderer->sdlRenderer, 1);
 #else
 	renderer->window = SDL_CreateWindow(projectName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, renderer->viewportWidth, renderer->viewportHeight, SDL_WINDOW_FULLSCREEN_DESKTOP * renderer->player.fullscreen);
+	if (!renderer->window) {
+		printf("Could not create SDL window: %s\\n", SDL_GetError());
+		return false;
+	}
 	renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+	if (!renderer->sdlRenderer) {
+		// Some Android devices expose no accelerated SDL renderer. Keep the
+		// emulator playable with SDL's software renderer instead.
+		renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_SOFTWARE);
+	}
 #endif
+	if (!renderer->window || !renderer->sdlRenderer) {
+		printf("Could not create SDL video renderer: %s\\n", SDL_GetError());
+		if (renderer->sdlRenderer) SDL_DestroyRenderer(renderer->sdlRenderer);
+		if (renderer->window) SDL_DestroyWindow(renderer->window);
+		renderer->sdlRenderer = NULL;
+		renderer->window = NULL;
+		return false;
+	}
 	SDL_GetWindowSize(renderer->window, &renderer->viewportWidth, &renderer->viewportHeight);
 	renderer->player.window = renderer->window;
 #ifdef COLOR_16_BIT
@@ -42,8 +59,26 @@ bool mSDLSWInit(struct mSDLRenderer* renderer) {
 	renderer->sdlTex = SDL_CreateTexture(renderer->sdlRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, height);
 #endif
 
+	if (!renderer->sdlTex) {
+		printf("Could not create SDL game texture: %s\\n", SDL_GetError());
+		SDL_DestroyRenderer(renderer->sdlRenderer);
+		SDL_DestroyWindow(renderer->window);
+		renderer->sdlRenderer = NULL;
+		renderer->window = NULL;
+		return false;
+	}
+
 	int stride;
-	SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride);
+	if (SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride) < 0 || !renderer->outputBuffer) {
+		printf("Could not lock SDL game texture: %s\\n", SDL_GetError());
+		SDL_DestroyTexture(renderer->sdlTex);
+		SDL_DestroyRenderer(renderer->sdlRenderer);
+		SDL_DestroyWindow(renderer->window);
+		renderer->sdlTex = NULL;
+		renderer->sdlRenderer = NULL;
+		renderer->window = NULL;
+		return false;
+	}
 	renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, stride / BYTES_PER_PIXEL);
 
 	return true;
