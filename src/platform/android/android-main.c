@@ -272,7 +272,10 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 
 static void mSDLDeinit(struct mSDLRenderer* renderer) {
 	mSDLDeinitEvents(&renderer->events);
-	mSDLDeinitAudio(&renderer->audio);
+	if (renderer->audioInitialized) {
+		mSDLDeinitAudio(&renderer->audio);
+		renderer->audioInitialized = false;
+	}
 	SDL_DestroyWindow(renderer->window);
 	renderer->deinit(renderer);
 	SDL_Quit();
@@ -443,17 +446,19 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	if (!didFail) {
 		mSDLSetScreensaverSuspendable(&renderer->events, renderer->core->opts.suspendScreensaver);
 		mSDLSuspendScreensaver(&renderer->events);
-		if (mSDLInitAudio(&renderer->audio, &thread)) {
-			renderer->runloop(renderer, &thread);
+		renderer->audioInitialized = mSDLInitAudio(&renderer->audio, &thread);
+		if (!renderer->audioInitialized) {
+			// Audio is optional on Android. A missing or unavailable audio
+			// device must never prevent video and touch controls from running.
+			printf("Audio unavailable; continuing with video only: %s\\n", SDL_GetError());
+		}
+		renderer->runloop(renderer, &thread);
+		if (renderer->audioInitialized)
 			mSDLPauseAudio(&renderer->audio);
-			if (mCoreThreadHasCrashed(&thread)) {
-				didFail = true;
-				printf("The game crashed!\n");
-				mCoreThreadEnd(&thread);
-			}
-		} else {
+		if (mCoreThreadHasCrashed(&thread)) {
 			didFail = true;
-			printf("Could not initialize audio.\n");
+			printf("The game crashed!\\n");
+			mCoreThreadEnd(&thread);
 		}
 		mSDLResumeScreensaver(&renderer->events);
 		mSDLSetScreensaverSuspendable(&renderer->events, false);
