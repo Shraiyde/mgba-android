@@ -42,7 +42,7 @@ jobs:
 
       - name: Fetch SDL2 source
         run: |
-          git clone --depth 1 --branch release-2.30.11 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL2"
+          git clone --depth 1 --branch release-2.30.9 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL2"
 
       - name: Build installable arm64 APK
         working-directory: src/platform/android
