@@ -275,7 +275,16 @@ internal static class Program
 
     private static async Task PublishRoomAdvertisement(bool clear = false)
     {
-        object advert = new { type = "pc-room", session = _session, salt = _salt, timestamp = clear ? 0L : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), protocol = 1 };
+        long timestamp = clear ? 0L : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        object advert = new
+        {
+            type = "pc-room",
+            session = _session,
+            salt = _salt,
+            timestamp,
+            protocol = 1,
+            proof = clear ? "" : Hmac($"{_session}|{_salt}|{timestamp}")
+        };
         var message = new MqttApplicationMessageBuilder()
             .WithTopic($"hns/johto-pc/{_pin}/room")
             .WithPayload(clear ? Array.Empty<byte>() : JsonSerializer.SerializeToUtf8Bytes(advert))
