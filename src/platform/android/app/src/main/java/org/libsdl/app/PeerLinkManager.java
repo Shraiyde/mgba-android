@@ -160,29 +160,36 @@ public final class PeerLinkManager {
         SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String savedRole = prefs.getString(PREF_ROLE, null);
         String savedPin = prefs.getString(PREF_PIN, null);
+        String savedSession = prefs.getString(PREF_SESSION, null);
 
-        AlertDialog.Builder builder = new AlertDialog.Builder(activity)
+        List<String> choices = new ArrayList<>();
+        choices.add("PC Server");
+        choices.add("Join another phone");
+        if ("pc".equals(savedRole) && savedPin != null)
+            choices.add("Reconnect to PC Server");
+        else if ("host".equals(savedRole) && savedPin != null)
+            choices.add("Reconnect as Host");
+        else if ("join".equals(savedRole) && savedPin != null)
+            choices.add("Reconnect");
+        choices.add("Play Offline");
+
+        new AlertDialog.Builder(activity)
             .setTitle("Heart & Soul Co-op")
             .setMessage("Connect the two phones with a four-digit PIN.")
-            .setNegativeButton("Play Offline", (dialog, which) -> dialog.dismiss());
-
-        if ("pc".equals(savedRole) && savedPin != null) {
-            builder.setPositiveButton("Reconnect to PC Server", (dialog, which) -> startPcServerJoin(savedPin));
-            builder.setNeutralButton("Change PC PIN", (dialog, which) -> showPcServerPinDialog());
-        } else {
-            builder.setNeutralButton("Join", (dialog, which) -> showJoinPinDialog());
-            if ("host".equals(savedRole) && savedPin != null) {
-                builder.setPositiveButton("Reconnect as Host", (dialog, which) -> startHost(savedPin, prefs.getString(PREF_SESSION, null)));
-            } else if ("join".equals(savedRole) && savedPin != null) {
-                builder.setPositiveButton("Reconnect", (dialog, which) -> startJoin(savedPin));
-            } else {
-                builder.setPositiveButton("PC Server", (dialog, which) -> showPcServerPinDialog());
-            }
-        }
-
-        AlertDialog dialog = builder.create();
-        dialog.show();
-        dialog.setOnCancelListener(d -> {});
+            .setItems(choices.toArray(new String[0]), (dialog, which) -> {
+                String choice = choices.get(which);
+                if ("PC Server".equals(choice))
+                    showPcServerPinDialog();
+                else if ("Join another phone".equals(choice))
+                    showJoinPinDialog();
+                else if ("Reconnect to PC Server".equals(choice))
+                    startPcServerJoin(savedPin);
+                else if ("Reconnect as Host".equals(choice))
+                    startHost(savedPin, savedSession);
+                else if ("Reconnect".equals(choice))
+                    startJoin(savedPin);
+            })
+            .show();
     }
 
     private void showJoinPinDialog() {
