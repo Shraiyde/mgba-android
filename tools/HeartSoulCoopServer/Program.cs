@@ -268,7 +268,7 @@ internal static class Program
         var message = new MqttApplicationMessageBuilder()
             .WithTopic($"{RootTopic}/down/{clientId}/control")
             .WithPayload(envelope)
-            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
+            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
             .Build();
         await _mqtt!.PublishAsync(message, _stop.Token);
     }
