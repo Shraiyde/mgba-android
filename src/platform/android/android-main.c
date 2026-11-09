@@ -34,8 +34,8 @@ static struct mAndroidLinkCable* sLinkCable;
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 4
-#define HNS_COOP_MAILBOX_SIZE 2104
+#define HNS_COOP_MAILBOX_VERSION 5
+#define HNS_COOP_MAILBOX_SIZE 2116
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define HNS_COOP_VAR_QUEUE_SIZE 128
 #define GBA_EWRAM_START 0x02000000
@@ -43,8 +43,10 @@ static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 static uint32_t sCoopMailboxAddress;
 static uint32_t sCoopMailboxNextScan;
+static uint32_t sCoopLastMapSent = UINT32_MAX;
 
 void mAndroidPeerLinkSetConnected(bool host) {
+	sCoopLastMapSent = UINT32_MAX;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
 		mPeerLinkSetConnected(sPeerLink, true);
@@ -54,6 +56,7 @@ void mAndroidPeerLinkSetConnected(bool host) {
 }
 
 void mAndroidPeerLinkSetDisconnected(void) {
+	sCoopLastMapSent = UINT32_MAX;
 	if (sPeerLink)
 		mPeerLinkSetConnected(sPeerLink, false);
 }
@@ -85,8 +88,19 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	if (sCoopMailboxAddress) {
 		bool connected = mPeerLinkIsConnected(sPeerLink);
 		core->busWrite32(core, sCoopMailboxAddress + 8, connected ? 1 : 0);
+		if (!connected) {
+			core->busWrite32(core, sCoopMailboxAddress + 2112, 0);
+			sCoopLastMapSent = UINT32_MAX;
+		}
 
 		if (connected) {
+			uint32_t localMapId = core->busRead32(core, sCoopMailboxAddress + 2104);
+			if (localMapId != sCoopLastMapSent || frame % 30 == 0) {
+				uint32_t networkMapId = htonl(localMapId);
+				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, &networkMapId, sizeof(networkMapId)))
+					sCoopLastMapSent = localMapId;
+			}
+
 			uint32_t read = core->busRead32(core, sCoopMailboxAddress + 20);
 			uint32_t write = core->busRead32(core, sCoopMailboxAddress + 16);
 			unsigned sent = 0;
@@ -144,6 +158,9 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					core->busWrite32(core, sCoopMailboxAddress + 1064, incomingWrite + 1);
 				} else if (peerEvent.messageType == mPEER_MSG_WORLD_READY && packed != 0) {
 					core->busWrite32(core, sCoopMailboxAddress + 2100, 1);
+				} else if (peerEvent.messageType == mPEER_MSG_POSITION) {
+					core->busWrite32(core, sCoopMailboxAddress + 2108, packed);
+					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);
 				}
 			}
 		}
@@ -341,6 +358,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	};
 	sCoopMailboxAddress = 0;
 	sCoopMailboxNextScan = 0;
+	sCoopLastMapSent = UINT32_MAX;
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
 		return 1;
 	}
