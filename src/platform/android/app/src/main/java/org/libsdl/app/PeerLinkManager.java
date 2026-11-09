@@ -1015,6 +1015,17 @@ public final class PeerLinkManager {
         if (current == null)
             return;
         current.runOnUiThread(() -> {
+            // A connected-state modal would cover the entire SDL surface, making
+            // the running game and its touch controls appear to be a black screen.
+            // Dismiss the pairing/status dialog as soon as the peer is accepted.
+            if ("Co-op connected".equals(title)) {
+                if (statusDialog != null) {
+                    statusDialog.dismiss();
+                    statusDialog = null;
+                }
+                Toast.makeText(current, message, Toast.LENGTH_LONG).show();
+                return;
+            }
             if (statusDialog != null && statusDialog.isShowing()) {
                 statusDialog.setTitle(title);
                 statusDialog.setMessage(message);
