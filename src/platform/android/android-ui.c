@@ -533,19 +533,20 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 			return;
 		}
 		SDL_SetTextureBlendMode(overlayCache.texture, SDL_BLENDMODE_BLEND);
-	}
-	SDL_Surface* surf = overlayCache.surface;
-	Uint32 transparent = SDL_MapRGBA(surf->format, 0, 0, 0, 0);
-	SDL_FillRect(surf, NULL, transparent);
-	Uint32 white = SDL_MapRGBA(surf->format, 0xFF, 0xFF, 0xFF, 0xF0);
-	for (i = 0; i < n; ++i) {
-		int tx = buttons[i].rect.x + (buttons[i].rect.w - 8 * 2) / 2;
-		int ty = buttons[i].rect.y + (buttons[i].rect.h - 8 * 2) / 2;
-		_blitText(surf, buttons[i].label, tx, ty, 2, white);
-	}
-	if (SDL_UpdateTexture(overlayCache.texture, NULL, surf->pixels, surf->pitch) < 0) {
-		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay texture update failed: %s", SDL_GetError());
-		return;
+		SDL_Surface* surf = overlayCache.surface;
+		Uint32 transparent = SDL_MapRGBA(surf->format, 0, 0, 0, 0);
+		SDL_FillRect(surf, NULL, transparent);
+		Uint32 white = SDL_MapRGBA(surf->format, 0xFF, 0xFF, 0xFF, 0xF0);
+		for (i = 0; i < n; ++i) {
+			int tx = buttons[i].rect.x + (buttons[i].rect.w - 8 * 2) / 2;
+			int ty = buttons[i].rect.y + (buttons[i].rect.h - 8 * 2) / 2;
+			_blitText(surf, buttons[i].label, tx, ty, 2, white);
+		}
+		if (SDL_UpdateTexture(overlayCache.texture, NULL, surf->pixels, surf->pitch) < 0) {
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay texture update failed: %s", SDL_GetError());
+			_freeOverlayCache();
+			return;
+		}
 	}
 	if (SDL_RenderCopy(renderer, overlayCache.texture, NULL, NULL) < 0) {
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay draw failed: %s", SDL_GetError());
