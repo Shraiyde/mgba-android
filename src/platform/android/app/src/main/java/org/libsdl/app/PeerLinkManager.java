@@ -115,7 +115,6 @@ public final class PeerLinkManager {
     private PeerConnectionFactory factory;
     private PeerConnection peerConnection;
     private DataChannel dataChannel;
-    private AlertDialog statusDialog;
     private String pin;
     private String sessionId;
     private String salt;
@@ -1015,37 +1014,16 @@ public final class PeerLinkManager {
         Activity current = activity;
         if (current == null)
             return;
-        current.runOnUiThread(() -> {
-            // A connected-state modal would cover the entire SDL surface, making
-            // the running game and its touch controls appear to be a black screen.
-            // Dismiss the pairing/status dialog as soon as the peer is accepted.
-            if ("Co-op connected".equals(title)) {
-                if (statusDialog != null) {
-                    statusDialog.dismiss();
-                    statusDialog = null;
-                }
-                Toast.makeText(current, message, Toast.LENGTH_LONG).show();
-                return;
-            }
-            if (statusDialog != null && statusDialog.isShowing()) {
-                statusDialog.setTitle(title);
-                statusDialog.setMessage(message);
-            } else {
-                statusDialog = new AlertDialog.Builder(current)
-                    .setTitle(title)
-                    .setMessage(message)
-                    .setPositiveButton("OK", (dialog, which) -> dialog.dismiss())
-                    .setNegativeButton("Disconnect", (dialog, which) -> closeCurrentSession(true))
-                    .create();
-                statusDialog.show();
-            }
-        });
+        // Status updates must never create a modal window over the SDL surface.
+        current.runOnUiThread(() ->
+            Toast.makeText(current, title + ": " + message, Toast.LENGTH_LONG).show());
     }
 
     private void showMessage(String message) {
         Activity current = activity;
         if (current != null)
-            current.runOnUiThread(() -> new AlertDialog.Builder(current).setMessage(message).setPositiveButton("OK", null).show());
+            current.runOnUiThread(() ->
+                Toast.makeText(current, message, Toast.LENGTH_LONG).show());
     }
 
     private static class SimpleSdpObserver implements SdpObserver {
