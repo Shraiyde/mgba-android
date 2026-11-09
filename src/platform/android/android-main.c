@@ -113,19 +113,6 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				core->busWrite32(core, sCoopMailboxAddress + 1060, varRead);
 			}
 
-			uint32_t varRead = core->busRead32(core, sCoopMailboxAddress + 1060);
-			uint32_t varWrite = core->busRead32(core, sCoopMailboxAddress + 1056);
-			unsigned varsSent = 0;
-			while (varRead != varWrite && varsSent < 4) {
-				uint32_t packed = core->busRead32(core, sCoopMailboxAddress + 1072 + (varRead % HNS_COOP_VAR_QUEUE_SIZE) * 4);
-				uint32_t networkPacked = htonl(packed);
-				if (!mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_VAR, &networkPacked, sizeof(networkPacked)))
-					break;
-				++varRead;
-				++varsSent;
-				core->busWrite32(core, sCoopMailboxAddress + 1060, varRead);
-			}
-
 			struct mPeerEvent peerEvent;
 			while (mPeerLinkPoll(sPeerLink, &peerEvent)) {
 				if (peerEvent.type != mPEER_EVENT_MESSAGE || peerEvent.size != sizeof(uint32_t))
