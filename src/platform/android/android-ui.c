@@ -177,153 +177,38 @@ static void _freeRoms(struct RomList* list) {
 // --- ROM picker --------------------------------------------------------------
 
 char* mAndroidPickRom(void) {
-	struct RomList list = {0};
-	char appDir[512];
-	_scanRoms(&list, appDir, sizeof(appDir));
+	JNIEnv* env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jobject activity = SDL_AndroidGetActivity();
+	if (!env || !activity) return NULL;
 
-	SDL_DisplayMode mode;
-	SDL_GetDesktopDisplayMode(0, &mode);
-	int w = mode.w;
-	int h = mode.h;
-	if (h > w) {
-		int t = w;
-		w = h;
-		h = t; // landscape
+	jclass cls = (*env)->GetObjectClass(env, activity);
+	jmethodID openPicker = (*env)->GetMethodID(env, cls, "openRomPicker", "()V");
+	jmethodID getResult = (*env)->GetMethodID(env, cls, "getPickedRomPath", "()Ljava/lang/String;");
+	if (!openPicker || !getResult) {
+		(*env)->DeleteLocalRef(env, cls);
+		return NULL;
 	}
-
-	SDL_Window* window = SDL_CreateWindow("mGBA", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-		w, h, SDL_WINDOW_FULLSCREEN_DESKTOP);
-	SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-	int rw, rh;
-	SDL_GetRendererOutputSize(renderer, &rw, &rh);
-
+	(*env)->CallVoidMethod(env, activity, openPicker);
 	char* result = NULL;
-	int selected = 0;
-	int scroll = 0;
-	int rows = (rh - 100) / ROW_HEIGHT;
-	if (rows < 3) {
-		rows = 3;
-	}
-	bool paging = (int) list.count > rows;
-
 	while (!result) {
-		SDL_Event event;
-		bool quit = false;
-		while (SDL_PollEvent(&event)) {
-			switch (event.type) {
-			case SDL_QUIT:
-				quit = true;
-				break;
-			case SDL_KEYDOWN:
-				switch (event.key.keysym.sym) {
-				case SDLK_UP:
-					if (selected > 0) {
-						--selected;
-					}
-					break;
-				case SDLK_DOWN:
-					if (selected + 1 < (int) list.count) {
-						++selected;
-					}
-					break;
-				case SDLK_LEFT:
-					scroll -= rows;
-					break;
-				case SDLK_RIGHT:
-					scroll += rows;
-					break;
-				case SDLK_RETURN:
-				case SDLK_SPACE:
-					if (selected < (int) list.count) {
-						result = strdup(list.entries[selected].path);
-					}
+		SDL_Delay(100);
+		jstring value = (jstring) (*env)->CallObjectMethod(env, activity, getResult);
+		if (value) {
+			const char* utf = (*env)->GetStringUTFChars(env, value, NULL);
+			if (utf && utf[0]) {
+				if (strcmp(utf, "__CANCELLED__") == 0) {
+					result = NULL;
+					(*env)->ReleaseStringUTFChars(env, value, utf);
+					(*env)->DeleteLocalRef(env, value);
 					break;
 				}
-				break;
-			case SDL_CONTROLLERBUTTONDOWN:
-				if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP && selected > 0) {
-					--selected;
-				} else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && selected + 1 < (int) list.count) {
-					++selected;
-				} else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A && selected < (int) list.count) {
-					result = strdup(list.entries[selected].path);
-				}
-				break;
-			case SDL_FINGERDOWN: {
-				int x = (int) (event.tfinger.x * rw);
-				int y = (int) (event.tfinger.y * rh);
-				if (paging && y > rh - 40) {
-					if (x < rw / 2) {
-						scroll -= rows;
-					} else {
-						scroll += rows;
-					}
-				} else {
-					int row = (y - 100) / ROW_HEIGHT;
-					int index = scroll + row;
-					if (row >= 0 && index >= 0 && index < (int) list.count) {
-						selected = index;
-						result = strdup(list.entries[selected].path);
-					}
-				}
-				break;
+				result = strdup(utf);
+				(*env)->ReleaseStringUTFChars(env, value, utf);
 			}
-			}
+			(*env)->DeleteLocalRef(env, value);
 		}
-		if (quit) {
-			break;
-		}
-		if (scroll > (int) list.count - rows) {
-			scroll = list.count - rows;
-		}
-		if (scroll < 0) {
-			scroll = 0;
-		}
-		if (selected < scroll) {
-			scroll = selected;
-		}
-		if (selected >= scroll + rows) {
-			scroll = selected - rows + 1;
-		}
-
-		SDL_Surface* surf = _makeSurface(rw, rh);
-		Uint32 white = SDL_MapRGBA(surf->format, 0xE8, 0xE8, 0xE8, 0xFF);
-		Uint32 gray = SDL_MapRGBA(surf->format, 0x90, 0x90, 0x90, 0xFF);
-		Uint32 black = SDL_MapRGBA(surf->format, 0x00, 0x00, 0x00, 0xFF);
-		_blitText(surf, "mGBA Android", 8, 12, 4, white);
-		_blitText(surf, list.count ? "Select a ROM:" : "No ROMs found. Copy .gba/.zip files to", 8, 56, FONT_SCALE, gray);
-		if (!list.count) {
-			_blitText(surf, "Android/data/com.gitsnup.mgbaandroid/files", 8, 56 + 8 * FONT_SCALE + 4, FONT_SCALE, gray);
-			_blitText(surf, "or /sdcard/ROMS, then restart the app.", 8, 56 + 2 * (8 * FONT_SCALE + 4), FONT_SCALE, gray);
-		}
-		int i;
-		for (i = 0; i < rows && scroll + i < (int) list.count; ++i) {
-			int index = scroll + i;
-			int y = 100 + i * ROW_HEIGHT;
-			if (index == selected) {
-				SDL_Rect rect = {8, y - 2, rw - 16, 8 * FONT_SCALE + 4};
-				SDL_FillRect(surf, &rect, white);
-				_blitText(surf, list.entries[index].name, 16, y, FONT_SCALE, black);
-			} else {
-				_blitText(surf, list.entries[index].name, 16, y, FONT_SCALE, white);
-			}
-		}
-		if (paging) {
-			_blitText(surf, scroll > 0 ? "< back" : "", 8, rh - 32, FONT_SCALE, gray);
-			_blitText(surf, scroll + rows < (int) list.count ? "more >" : "", rw - 8 * FONT_SCALE * 6 - 8, rh - 32, FONT_SCALE, gray);
-		}
-		SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer, surf);
-		SDL_FreeSurface(surf);
-		SDL_RenderClear(renderer);
-		SDL_RenderCopy(renderer, tex, NULL, NULL);
-		SDL_DestroyTexture(tex);
-		SDL_RenderPresent(renderer);
-		SDL_Delay(16);
 	}
-
-	SDL_DestroyRenderer(renderer);
-	SDL_DestroyWindow(window);
-	_freeRoms(&list);
+	(*env)->DeleteLocalRef(env, cls);
 	return result;
 }
 
