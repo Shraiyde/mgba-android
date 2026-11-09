@@ -1,18 +1,18 @@
 # Android peer-link
 
-The Android app now uses a four-digit PIN rendezvous flow:
+The Android app supports a four-digit PIN room hosted by the Windows PC server:
 
-1. One phone chooses **Host** and displays a four-digit PIN.
-2. The other chooses **Join** and enters that PIN.
-3. The apps establish a WebRTC data channel directly when NAT traversal succeeds.
-4. If a direct route cannot be established, encrypted game frames automatically use the MQTT relay.
-5. The host republishes its room advertisement and the clients reconnect after temporary network loss.
+1. Run `HeartSoulCoopServer.exe` on the PC. It displays the room PIN.
+2. Both phones choose **PC Server** in the co-op menu and enter that same PIN.
+3. The PC server authenticates both clients and forwards encrypted game-link frames between them.
+4. Both phones exchange ephemeral ECDH keys and use AES-GCM for end-to-end frame encryption.
+5. The PC and phones reconnect automatically after temporary network loss.
 
-No PC-hosted server, Tailscale, or Cloudflare tunnel is used. The rendezvous/relay broker is the public EMQX MQTT WebSocket endpoint. WebRTC uses public STUN servers; MQTT is the fallback relay.
+The PC makes an outbound MQTT connection to the public EMQX broker; the phones use secure MQTT WebSockets to the same broker. This avoids requiring an inbound port or router port-forward. The PC server is the room coordinator and relay; both phones still run their own game.
 
 ## Transport implementation
 
-- `PeerLinkManager.java` owns the PIN UI, MQTT rendezvous, WebRTC data channel, relay fallback, and reconnect behavior.
+- `PeerLinkManager.java` owns the PC-server PIN join flow, MQTT signaling, encrypted relay frames, and reconnect behavior.
 - The PIN-derived PBKDF2/HMAC handshake authenticates the exchanged ephemeral ECDH keys.
 - Peer frames are encrypted with AES-GCM before using either transport.
 - `android-peer-jni.c` passes encrypted peer frames between Java and native mGBA.
