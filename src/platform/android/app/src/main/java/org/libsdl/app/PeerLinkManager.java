@@ -271,9 +271,7 @@ public final class PeerLinkManager {
 
             connectMqtt(() -> {
                 subscribe(toHostTopic(), relayHostTopic());
-                publishRoomAdvertisement();
-                handler.removeCallbacks(roomHeartbeat);
-                handler.postDelayed(roomHeartbeat, 10000);
+                publish(roomTopic(), advert.toString().getBytes(StandardCharsets.UTF_8), 1, true);
                 showStatus("Your co-op PIN", pin + "\nWaiting for the other phone…");
             });
         } catch (Exception e) {
