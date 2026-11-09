@@ -34,8 +34,8 @@ static struct mAndroidLinkCable* sLinkCable;
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 3
-#define HNS_COOP_MAILBOX_SIZE 2096
+#define HNS_COOP_MAILBOX_VERSION 4
+#define HNS_COOP_MAILBOX_SIZE 2104
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define HNS_COOP_VAR_QUEUE_SIZE 128
 #define GBA_EWRAM_START 0x02000000
@@ -113,6 +113,15 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				core->busWrite32(core, sCoopMailboxAddress + 1060, varRead);
 			}
 
+			// Keep advertising readiness until the peer confirms its initial
+			// story-state transfer is also complete.
+			uint32_t localReady = core->busRead32(core, sCoopMailboxAddress + 2096);
+			uint32_t remoteReady = core->busRead32(core, sCoopMailboxAddress + 2100);
+			if (localReady && !remoteReady && frame % 60 == 0) {
+				uint32_t ready = htonl(1);
+				mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_READY, &ready, sizeof(ready));
+			}
+
 			struct mPeerEvent peerEvent;
 			while (mPeerLinkPoll(sPeerLink, &peerEvent)) {
 				if (peerEvent.type != mPEER_EVENT_MESSAGE || peerEvent.size != sizeof(uint32_t))
@@ -134,6 +143,8 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 						continue;
 					core->busWrite32(core, sCoopMailboxAddress + 1584 + (incomingWrite % HNS_COOP_VAR_QUEUE_SIZE) * 4, packed);
 					core->busWrite32(core, sCoopMailboxAddress + 1064, incomingWrite + 1);
+				} else if (peerEvent.messageType == mPEER_MSG_WORLD_READY && packed != 0) {
+					core->busWrite32(core, sCoopMailboxAddress + 2100, 1);
 				}
 			}
 		}
