@@ -12,7 +12,7 @@ This is the Windows room host and relay for the two Android players. It does not
 
 ## Network behavior
 
-- The PC makes an outbound MQTT connection to the public EMQX broker.
+- The PC makes an outbound **TLS-encrypted MQTT connection** to the public EMQX broker on TCP port 8883.
 - The phones use MQTT over secure WebSockets to the same broker.
 - No inbound router port, port forwarding, Tailscale, or Cloudflare tunnel is required.
 - The server routes encrypted game-link frames between the two registered Android clients.
