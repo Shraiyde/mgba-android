@@ -263,15 +263,16 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android frame clear failed: %s", SDL_GetError());
 			}
-			if (SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, 0, &dest) < 0 && !renderCopyErrorLogged) {
+			bool frameCopied = SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, 0, &dest) == 0;
+			if (!frameCopied && !renderCopyErrorLogged) {
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android game frame copy failed: %s", SDL_GetError());
 				renderCopyErrorLogged = true;
 			}
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
 			SDL_RenderPresent(renderer->sdlRenderer);
-			if (!firstFrameLogged) {
+			if (frameCopied && !firstFrameLogged) {
 				firstFrameLogged = true;
-				SDL_Log("First Android game frame presented; core frame=%u", renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0);
+				SDL_Log("First Android game frame copied and presented; core frame=%u", renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0);
 			}
 
 			int stride = 0;
