@@ -115,7 +115,10 @@ internal sealed class PcRelayServer
                     try
                     {
                         if (_mqtt.IsConnected)
+                        {
+                            await RemoveRoomAdvertisementAsync();
                             await _mqtt.DisconnectAsync();
+                        }
                     }
                     catch { }
                     _mqtt.Dispose();
