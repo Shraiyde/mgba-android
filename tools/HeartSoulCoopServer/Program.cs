@@ -24,7 +24,7 @@ internal sealed class RoomConfig
 internal static class Program
 {
     private const string BrokerHost = "broker.emqx.io";
-    private const int BrokerPort = 1883;
+    private const int BrokerPort = 8883;
     private const int Pbkdf2Iterations = 500_000;
     private static readonly ConcurrentDictionary<string, ClientSlot> Clients = new();
     private static readonly SemaphoreSlim Gate = new(1, 1);
@@ -63,7 +63,7 @@ internal static class Program
         Console.WriteLine("JOIN PIN: " + _pin);
         Console.WriteLine("Keep this window open while playing.");
         Console.WriteLine("Both Android players enter this PIN in the PC Server connection screen.");
-        Console.WriteLine("Internet relay: outbound MQTT over TCP 1883; no router port-forward required.");
+        Console.WriteLine("Internet relay: outbound MQTT over TLS (TCP 8883); no router port-forward required.");
         Console.WriteLine("Persistent PIN file: " + configPath);
         Console.WriteLine("Press Ctrl+C to stop. Run with --new-pin to rotate the PIN.");
         Console.WriteLine();
@@ -81,7 +81,7 @@ internal static class Program
             }
         };
 
-        await ConnectAndAdvertise();
+        await ReconnectLoop();
         _ = HeartbeatLoop(_stop.Token);
         _ = ClientWatchdog(_stop.Token);
 
@@ -102,6 +102,7 @@ internal static class Program
     {
         var options = new MqttClientOptionsBuilder()
             .WithTcpServer(BrokerHost, BrokerPort)
+            .WithTlsOptions(tls => tls.UseTls())
             .WithClientId("hns-pc-" + Guid.NewGuid().ToString("N"))
             .WithCleanSession()
             .WithKeepAlivePeriod(TimeSpan.FromSeconds(25))
@@ -183,7 +184,8 @@ internal static class Program
         }
         catch { return; }
 
-        if (!FixedEquals(Hmac($"{_session}|{clientId}|{publicKey}"), proof))
+        if (payload.Length is 0 or > 4096 || publicKey.Length is < 40 or > 1024
+            || !FixedEquals(Hmac($"{_session}|{clientId}|{publicKey}"), proof))
         {
             await SendJson(clientId, "rejected", new { reason = "PIN authentication failed" });
             return;
@@ -298,7 +300,7 @@ internal static class Program
             .WithRetainFlag(true)
             .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
             .Build();
-        await _mqtt!.PublishAsync(message, _stop.Token);
+        await _mqtt!.PublishAsync(message, clear ? CancellationToken.None : _stop.Token);
     }
 
     private static async Task HeartbeatLoop(CancellationToken token)
