@@ -287,12 +287,15 @@ static SDL_Texture* debugTexture;
 static SDL_Renderer* debugRenderer;
 static int debugPanelWidth;
 static const int debugPanelHeight = 92;
+static uint64_t debugGeneration;
+static uint64_t debugUploadedGeneration = UINT64_MAX;
 
 void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char* frames, const char* thread, const char* video, const char* error) {
 	const char* values[DEBUG_LINE_COUNT] = { rom, load, frames, thread, video, error };
 	int i;
 	for (i = 0; i < DEBUG_LINE_COUNT; ++i)
 		snprintf(debugLines[i], sizeof(debugLines[i]), "%s", values[i] ? values[i] : "");
+	++debugGeneration;
 }
 
 static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
@@ -304,6 +307,7 @@ static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
 		debugTexture = NULL;
 		debugSurface = NULL;
 		debugPanelWidth = 0;
+		debugUploadedGeneration = UINT64_MAX;
 		debugRenderer = renderer;
 	}
 	int width = windowWidth - 16;
@@ -327,15 +331,21 @@ static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
 		}
 		SDL_SetTextureBlendMode(debugTexture, SDL_BLENDMODE_BLEND);
 	}
-	Uint32 background = SDL_MapRGBA(debugSurface->format, 0, 0, 0, 220);
-	Uint32 foreground = SDL_MapRGBA(debugSurface->format, 255, 255, 255, 255);
-	SDL_FillRect(debugSurface, NULL, background);
-	int i;
-	for (i = 0; i < DEBUG_LINE_COUNT; ++i)
-		_blitText(debugSurface, debugLines[i], 6, 4 + i * 14, 1, foreground);
-	if (SDL_UpdateTexture(debugTexture, NULL, debugSurface->pixels, debugSurface->pitch) < 0) {
-		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay update failed: %s", SDL_GetError());
-		return;
+	// The status text changes only when the 500 ms diagnostics snapshot is
+	// refreshed. Re-uploading this panel on every game frame wastes CPU and
+	// texture bandwidth without changing a pixel.
+	if (debugUploadedGeneration != debugGeneration) {
+		Uint32 background = SDL_MapRGBA(debugSurface->format, 0, 0, 0, 220);
+		Uint32 foreground = SDL_MapRGBA(debugSurface->format, 255, 255, 255, 255);
+		SDL_FillRect(debugSurface, NULL, background);
+		int i;
+		for (i = 0; i < DEBUG_LINE_COUNT; ++i)
+			_blitText(debugSurface, debugLines[i], 6, 4 + i * 14, 1, foreground);
+		if (SDL_UpdateTexture(debugTexture, NULL, debugSurface->pixels, debugSurface->pitch) < 0) {
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay update failed: %s", SDL_GetError());
+			return;
+		}
+		debugUploadedGeneration = debugGeneration;
 	}
 	SDL_Rect panel = { 8, 8, width, debugPanelHeight };
 	SDL_RenderCopy(renderer, debugTexture, NULL, &panel);
@@ -537,6 +547,7 @@ void mAndroidOverlaySetWindow(SDL_Window* window) {
 		debugSurface = NULL;
 		debugRenderer = NULL;
 		debugPanelWidth = 0;
+		debugUploadedGeneration = UINT64_MAX;
 	}
 	if (!overlay.touchesInitialized) {
 		int i;
