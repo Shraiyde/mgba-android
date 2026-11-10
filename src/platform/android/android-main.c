@@ -375,11 +375,11 @@ static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
 	bool softwareRenderer = false;
 	renderer->core->baseVideoSize(renderer->core, &width, &height);
 #if SDL_VERSION_ATLEAST(3, 0, 0)
-	renderer->window = SDL_CreateWindow(projectName, renderer->viewportWidth, renderer->viewportHeight, SDL_WINDOW_FULLSCREEN * renderer->player.fullscreen);
+	renderer->window = SDL_CreateWindow("mGBA", renderer->viewportWidth, renderer->viewportHeight, SDL_WINDOW_FULLSCREEN * renderer->player.fullscreen);
 	renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, NULL);
 	SDL_SetRenderVSync(renderer->sdlRenderer, 1);
 #else
-	renderer->window = SDL_CreateWindow(projectName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+	renderer->window = SDL_CreateWindow("mGBA", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
 		renderer->viewportWidth, renderer->viewportHeight,
 		SDL_WINDOW_FULLSCREEN_DESKTOP * renderer->player.fullscreen);
 	if (!renderer->window)
@@ -476,8 +476,10 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 		if (!mCoreSyncWaitFrameStart(&context->impl->sync)) {
 			// The core is waiting on this sync lock; apply mailbox reads/writes here
 			// so the game bus is never accessed concurrently with CPU execution.
+			// Connection state can be applied while idle, but game-bus mailbox
+			// access is deferred until a frame boundary below. This path may run
+			// while the CPU is executing, so it must not inspect or modify the bus.
 			mSDLAndroidApplyPendingPeerState();
-			mSDLAndroidUpdateCoopMailbox(renderer->core);
 			// Keep the Android controls visible even before the GBA core has
 			// produced its first frame (or while video sync is waiting).
 			// Release the sync mutex before doing SDL work so the core thread
