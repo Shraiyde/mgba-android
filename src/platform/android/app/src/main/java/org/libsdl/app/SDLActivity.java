@@ -426,13 +426,24 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(this);
 
-        // Get filename from "Open with" of another application
+        // Android document providers commonly deliver content:// URIs, not
+        // filesystem paths. Stage those through ContentResolver before passing
+        // a real readable path to SDL/mGBA.
         Intent intent = getIntent();
         if (intent != null && intent.getData() != null) {
-            String filename = intent.getData().getPath();
-            if (filename != null) {
-                Log.v(TAG, "Got filename: " + filename);
-                SDLActivity.onNativeDropFile(filename);
+            Uri uri = intent.getData();
+            if ("file".equalsIgnoreCase(uri.getScheme())) {
+                String filename = uri.getPath();
+                if (filename != null) {
+                    Log.v(TAG, "Got file URI: " + filename);
+                    SDLActivity.onNativeDropFile(filename);
+                }
+            } else if ("content".equalsIgnoreCase(uri.getScheme())) {
+                Log.i(TAG, "Importing ROM supplied by another application: " + uri);
+                stageRomDocument(uri, true);
+            } else {
+                Log.w(TAG, "Ignoring unsupported ROM URI scheme: " + uri.getScheme());
+                Toast.makeText(this, "Unsupported ROM file location. Use LOAD ROM to select it.", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -475,13 +486,26 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             return;
         }
         Uri uri = data.getData();
+        stageRomDocument(uri, false);
+    }
+
+    /** Copy a document-provider URI to app cache, then publish only a verified path. */
+    private void stageRomDocument(Uri uri, boolean sendToNative) {
+        if (uri == null) {
+            if (!sendToNative) pickedRomPath = "__ERROR__:Selected document URI was empty";
+            return;
+        }
         try {
             getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
+            // ACTION_VIEW providers often grant a temporary read permission only.
         }
         new Thread(() -> {
             File romDir = new File(getCacheDir(), "selected-roms");
-            if (!romDir.exists()) romDir.mkdirs();
+            if (!romDir.exists() && !romDir.mkdirs() && !romDir.isDirectory()) {
+                publishRomImportError(sendToNative, "Unable to create ROM cache directory");
+                return;
+            }
             String displayName = "selected_rom.gba";
             try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
                 if (cursor != null && cursor.moveToFirst()) {
@@ -508,22 +532,29 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     output.flush();
                     output.getFD().sync();
                 }
-
-                // Publish the path only after both streams have closed and the
-                // complete staged file has been verified on disk.
                 if (!destination.isFile() || copiedBytes <= 0 || destination.length() != copiedBytes) {
                     throw new IllegalStateException("Imported ROM is empty or incomplete");
                 }
-                Log.i(TAG, "ROM import complete: " + destination.getAbsolutePath()
-                        + " (" + copiedBytes + " bytes)");
-                pickedRomPath = destination.getAbsolutePath();
+                String path = destination.getAbsolutePath();
+                Log.i(TAG, "ROM import complete: " + path + " (" + copiedBytes + " bytes)");
+                if (sendToNative) {
+                    SDLActivity.onNativeDropFile(path);
+                } else {
+                    pickedRomPath = path;
+                }
             } catch (Exception error) {
                 Log.e(TAG, "Could not import selected ROM", error);
-                pickedRomPath = "__ERROR__:" + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
-                final String errorText = "Could not import ROM: " + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
-                runOnUiThread(() -> Toast.makeText(SDLActivity.this, errorText, Toast.LENGTH_LONG).show());
+                String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                publishRomImportError(sendToNative, message);
             }
         }, "ROM-Import").start();
+    }
+
+    private void publishRomImportError(boolean sendToNative, String message) {
+        if (!sendToNative) pickedRomPath = "__ERROR__:" + message;
+        final String errorText = "Could not import ROM: " + message;
+        runOnUiThread(() -> Toast.makeText(SDLActivity.this, errorText, Toast.LENGTH_LONG).show());
+    }
     }
 
     protected void pauseNativeThread() {
