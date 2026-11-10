@@ -503,21 +503,18 @@ int main(int argc, char** argv) {
 	int ret = mSDLRun(&renderer, &args);
 	mAndroidOverlaySetWindow(NULL);
 	mSDLDetachPlayer(&renderer.events, &renderer.player);
-	pthread_mutex_lock(&sPeerLinkPointerLock);
-	struct mPeerLink* peerLinkToDestroy = sPeerLink;
-	sPeerLink = NULL;
-	pthread_mutex_unlock(&sPeerLinkPointerLock);
-	if (peerLinkToDestroy)
-		mPeerLinkDestroy(peerLinkToDestroy);
 	mInputMapDeinit(&renderer.core->inputMap);
 
 	mSDLDeinit(&renderer);
 	struct mAndroidLinkCable* linkCable = sLinkCable;
+	pthread_mutex_lock(&sPeerLinkPointerLock);
 	struct mPeerLink* peerLink = sPeerLink;
-	sLinkCable = NULL;
 	sPeerLink = NULL;
+	pthread_mutex_unlock(&sPeerLinkPointerLock);
+	sLinkCable = NULL;
 	mAndroidLinkCableDestroy(linkCable);
-	mPeerLinkDestroy(peerLink);
+	if (peerLink)
+		mPeerLinkDestroy(peerLink);
 	mStandardLoggerDeinit(&_logger);
 
 	mArgumentsDeinit(&args);
