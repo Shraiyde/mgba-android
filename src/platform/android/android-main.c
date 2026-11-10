@@ -98,11 +98,14 @@ static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* er
 	if (error && error[0])
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: %.180s", error);
 	mSDLAndroidUpdateDebugOverlay(renderer, 0, true, false, false, false);
-	Uint32 until = SDL_GetTicks() + 7000;
-	while ((Sint32)(until - SDL_GetTicks()) > 0) {
+	bool dismissed = false;
+	while (!dismissed) {
 		SDL_Event event;
-		while (SDL_PollEvent(&event))
+		while (SDL_PollEvent(&event)) {
 			mAndroidOverlayHandleEvent(&event);
+			if (event.type == SDL_QUIT || event.type == SDL_KEYDOWN || event.type == SDL_FINGERDOWN)
+				dismissed = true;
+		}
 		SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 		SDL_RenderClear(renderer->sdlRenderer);
 		mAndroidOverlayDraw(renderer->sdlRenderer, NULL);
@@ -487,14 +490,22 @@ int main(int argc, char** argv) {
 	SDL_Log("Resolving ROM core for: %s", args.fname);
 	renderer.core = mCoreFind(args.fname);
 	if (!renderer.core) {
+		struct stat romInfo;
+		if (args.fname && stat(args.fname, &romInfo) == 0)
+			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FOUND | SIZE: %llu bytes", (unsigned long long) romInfo.st_size);
+		else
+			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FILE NOT FOUND");
+		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: FAILED - NO COMPATIBLE CORE");
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: mCoreFind could not identify this ROM");
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ROM load failed", "mGBA could not identify this ROM file.", NULL);
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "No compatible emulator core found for selected ROM");
-		printf("Could not run game. Are you sure the file exists and is a compatible game?\n");
 		mArgumentsDeinit(&args);
 		SDL_Quit();
 		return 1;
 	}
 
 	if (!renderer.core->init(renderer.core)) {
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Emulator initialization failed", "mGBA could not initialize the emulator core.", NULL);
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Emulator core initialization failed");
 		mArgumentsDeinit(&args);
 		SDL_Quit();
@@ -534,6 +545,7 @@ int main(int argc, char** argv) {
 	renderer.runloop = mSDLAndroidRunloop;
 
 	if (!renderer.init(&renderer)) {
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Video initialization failed", SDL_GetError(), NULL);
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android renderer initialization failed: %s", SDL_GetError());
 		mArgumentsDeinit(&args);
 		mCoreConfigDeinit(&renderer.core->config);
@@ -617,6 +629,14 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		return 1;
 	}
 	snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: SUCCESS");
+	// Reattach after loadROM: some core loaders reset their video state while
+	// initializing the cartridge, so the texture must be installed again.
+	if (renderer->outputBuffer && renderer->outputStride >= (int) renderer->width) {
+		renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
+		renderer->videoBufferAttached = true;
+	} else {
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL VIDEO BUFFER NOT AVAILABLE AFTER ROM LOAD");
+	}
 	SDL_Log("ROM loaded successfully: %s", args->fname);
 	if (sLinkCable)
 		mAndroidLinkCableAttach(renderer->core, sLinkCable);
