@@ -216,8 +216,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			size_t word;
 			for (word = 0; word <= lastWord; ++word) {
 				if (ewram[word] == HNS_COOP_MAILBOX_MAGIC
-					&& ((const uint16_t*) &ewram[word])[2] == HNS_COOP_MAILBOX_VERSION
-					&& ((const uint16_t*) &ewram[word])[3] == HNS_COOP_MAILBOX_SIZE) {
+					&& ewram[word + 1] == ((uint32_t) HNS_COOP_MAILBOX_SIZE << 16 | HNS_COOP_MAILBOX_VERSION)) {
 					sCoopMailboxAddress = GBA_EWRAM_START + (uint32_t) (word * sizeof(uint32_t));
 					break;
 				}
