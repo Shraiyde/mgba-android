@@ -462,6 +462,8 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 		const SDL_Rect* toggle = _toggleRect();
 		if (x >= toggle->x && x < toggle->x + toggle->w && y >= toggle->y && y < toggle->y + toggle->h) {
 			overlay.hidden = !overlay.hidden;
+			if (overlay.hidden)
+				mAndroidOverlayReset();
 			return;
 		}
 		if (overlay.hidden) {
