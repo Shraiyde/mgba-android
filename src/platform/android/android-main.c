@@ -571,9 +571,10 @@ int main(int argc, char** argv) {
 	renderer.core->setPeripheral(renderer.core, mPERIPH_RUMBLE, &renderer.player.rumble.d.d);
 #endif
 
+	struct mPeerLink* peerLink;
 	pthread_mutex_lock(&sPeerLinkPointerLock);
 	sPeerLink = mPeerLinkCreate();
-	struct mPeerLink* peerLink = sPeerLink;
+	peerLink = sPeerLink;
 	pthread_mutex_unlock(&sPeerLinkPointerLock);
 	if (peerLink) {
 		mPeerLinkUseJavaTransport(peerLink, true);
@@ -591,7 +592,7 @@ int main(int argc, char** argv) {
 	mSDLDeinit(&renderer);
 	struct mAndroidLinkCable* linkCable = sLinkCable;
 	pthread_mutex_lock(&sPeerLinkPointerLock);
-	struct mPeerLink* peerLink = sPeerLink;
+	peerLink = sPeerLink;
 	sPeerLink = NULL;
 	pthread_mutex_unlock(&sPeerLinkPointerLock);
 	sLinkCable = NULL;
