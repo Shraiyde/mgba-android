@@ -455,7 +455,11 @@ int main(int argc, char** argv) {
 		.rewindBufferInterval = 1,
 		.audioBuffers = 1024,
 		.videoSync = true,
-		.audioSync = true,
+		// Audio output is attached after the core thread starts. Starting with
+		// audio sync enabled can let the CPU thread fill its buffer and wait
+		// before SDL has opened the device that drains it. Enable sync only
+		// after the audio callback is live.
+		.audioSync = false,
 		.volume = 0x100,
 		.logLevel = mLOG_WARN | mLOG_ERROR | mLOG_FATAL,
 		.fullscreen = 1,
@@ -738,16 +742,19 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		mSDLSuspendScreensaver(&renderer->events);
 		renderer->audioInitialized = mSDLInitAudio(&renderer->audio, &thread);
 		if (!renderer->audioInitialized) {
-			// If Android exposes no audio device, keep gameplay/video alive.
-			// Audio sync is restored by default and disabled only for this
-			// hardware-failure fallback because there is no consumer to drain it.
+			// No consumer exists, so leave audio sync disabled. Video and
+			// emulation must continue independently of audio device failures.
+			renderer->core->opts.audioSync = false;
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: AUDIO UNAVAILABLE - VIDEO-ONLY FALLBACK");
 			SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Audio initialization failed; continuing video without audio: %s", SDL_GetError());
+		} else {
+			// The SDL callback is now running and can drain the core buffer.
+			// Turn synchronization on only after that consumer is available.
 			MutexLock(&thread.impl->sync.audioBufferMutex);
-			thread.impl->sync.audioWait = false;
+			thread.impl->sync.audioWait = true;
 			ConditionWake(&thread.impl->sync.audioRequiredCond);
 			MutexUnlock(&thread.impl->sync.audioBufferMutex);
-		} else {
+			renderer->core->opts.audioSync = true;
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
 		}
 		renderer->runloop(renderer, &thread);
