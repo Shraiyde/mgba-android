@@ -142,9 +142,32 @@ public final class PeerLinkManager {
 
     public static synchronized void initialize(Activity value) {
         activity = value;
-        if (instance == null)
+        boolean created = instance == null;
+        if (created)
             instance = new PeerLinkManager();
         nativeInitialize();
+        PeerLinkManager manager = instance;
+        if (manager.accepted && manager.sessionKey != null)
+            manager.nativePeerConnected(manager.host);
+        if (created)
+            manager.handler.post(manager::restoreSavedSession);
+    }
+
+    private void restoreSavedSession() {
+        if (retryEnabled || mqtt != null || activity == null)
+            return;
+        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String savedRole = prefs.getString(PREF_ROLE, null);
+        String savedPin = prefs.getString(PREF_PIN, null);
+        String savedSession = prefs.getString(PREF_SESSION, null);
+        if (savedPin == null || !savedPin.matches("\\d{4}"))
+            return;
+        if ("host".equals(savedRole))
+            startHost(savedPin, savedSession);
+        else if ("join".equals(savedRole))
+            startJoin(savedPin);
+        else if ("pc".equals(savedRole))
+            startPcServerJoin(savedPin);
     }
 
     public static synchronized void detachActivity(Activity value) {
