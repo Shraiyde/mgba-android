@@ -474,6 +474,9 @@ int main(int argc, char** argv) {
 	if (sPeerLink) {
 		mPeerLinkUseJavaTransport(sPeerLink, true);
 		sLinkCable = mAndroidLinkCableCreate(sPeerLink, true);
+		// Java may have preserved an accepted peer session while SDL was paused
+		// or the Activity was recreated. Reapply that state after the native link exists.
+		mAndroidPeerJniSyncConnection();
 	}
 	SDL_Log("Android renderer ready; loading selected ROM: %s", args.fname);
 	int ret = mSDLRun(&renderer, &args);
