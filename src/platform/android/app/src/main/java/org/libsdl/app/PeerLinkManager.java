@@ -78,8 +78,8 @@ public final class PeerLinkManager {
     private final Runnable roomHeartbeat = new Runnable() {
         @Override public void run() {
             if (host && mqttConnected) {
+                // publishRoomAdvertisement() owns the single heartbeat schedule.
                 publishRoomAdvertisement();
-                handler.postDelayed(this, 10000);
             }
         }
     };
@@ -145,6 +145,11 @@ public final class PeerLinkManager {
         if (instance == null)
             instance = new PeerLinkManager();
         nativeInitialize();
+    }
+
+    public static synchronized void detachActivity(Activity value) {
+        if (activity == value)
+            activity = null;
     }
 
     public static void showPairingDialog() {
@@ -235,6 +240,7 @@ public final class PeerLinkManager {
 
     private void startPcServerJoin(String enteredPin) {
         closeCurrentSession(false);
+        PeerLinkKeepAliveService.start(activity);
         host = false;
         pcServerMode = true;
         pcHelloSent = false;
@@ -261,6 +267,7 @@ public final class PeerLinkManager {
 
     private void startHost(String existingPin, String existingSession) {
         closeCurrentSession(false);
+        PeerLinkKeepAliveService.start(activity);
         host = true;
         retryEnabled = true;
         pin = existingPin != null && existingPin.matches("\\d{4}") ? existingPin : String.format("%04d", random.nextInt(10000));
@@ -291,6 +298,7 @@ public final class PeerLinkManager {
 
     private void startJoin(String enteredPin) {
         closeCurrentSession(false);
+        PeerLinkKeepAliveService.start(activity);
         host = false;
         retryEnabled = true;
         pin = enteredPin;
@@ -973,6 +981,9 @@ public final class PeerLinkManager {
     private void closeCurrentSession(boolean clearPreferences) {
         boolean wasConnected = nativeConnected;
         retryEnabled = false;
+        Activity currentActivity = activity;
+        if (currentActivity != null)
+            PeerLinkKeepAliveService.stop(currentActivity);
         handler.removeCallbacks(roomHeartbeat);
         handler.removeCallbacks(pcHeartbeat);
         handler.removeCallbacks(pcServerWatchdog);
