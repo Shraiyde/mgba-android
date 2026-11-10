@@ -488,22 +488,32 @@ int main(int argc, char** argv) {
 	if (args.fname) {
 		SDL_Log("Resolving ROM core for: %s", args.fname);
 		renderer.core = mCoreFind(args.fname);
-	} else {
-		renderer.core = mCoreCreate(mPLATFORM_GBA);
-		snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: NONE SELECTED");
-		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: WAITING FOR USER");
-		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
+		if (!renderer.core) {
+			struct stat romInfo;
+			if (stat(args.fname, &romInfo) == 0)
+				snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FOUND | SIZE: %llu bytes", (unsigned long long) romInfo.st_size);
+			else
+				snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FILE NOT FOUND");
+			snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: WAITING FOR USER");
+			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: initial file not recognized; choose a ROM");
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Initial file is not a supported ROM; opening the emulator without a game");
+			free(args.fname);
+			args.fname = NULL;
+		}
 	}
 	if (!renderer.core) {
-		struct stat romInfo;
-		if (args.fname && stat(args.fname, &romInfo) == 0)
-			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FOUND | SIZE: %llu bytes", (unsigned long long) romInfo.st_size);
-		else
-			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FILE NOT FOUND");
-		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: FAILED - NO COMPATIBLE CORE");
-		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: mCoreFind could not identify this ROM");
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ROM load failed", "mGBA could not identify this ROM file.", NULL);
-		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "No compatible emulator core found for selected ROM");
+		renderer.core = mCoreCreate(mPLATFORM_GBA);
+		if (!args.fname && !sAndroidRomStatus[0]) {
+			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: NONE SELECTED");
+			snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: WAITING FOR USER");
+			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
+		}
+	}
+	if (!renderer.core) {
+		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: FAILED - CORE UNAVAILABLE");
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: mCoreCreate could not create the GBA core");
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Emulator initialization failed", "mGBA could not create the GBA emulator core.", NULL);
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not create GBA core");
 		mArgumentsDeinit(&args);
 		SDL_Quit();
 		return 1;
