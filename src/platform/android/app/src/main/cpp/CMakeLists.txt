@@ -40,6 +40,12 @@ if(MGBA_DEFS)
 	target_compile_definitions(main PRIVATE ${MGBA_DEFS})
 endif()
 
+# The mGBA core selects POSIX threading inside its own CMake directory.
+# That directory-scoped definition does not propagate to this sibling frontend
+# target. Both sides share mCoreThreadInternal/mCoreSync, so their pthread
+# structure layouts must match exactly.
+target_compile_definitions(main PRIVATE USE_PTHREADS)
+
 target_include_directories(main PRIVATE
 	${MGBA_ROOT}/include
 	${MGBA_ROOT}/src
