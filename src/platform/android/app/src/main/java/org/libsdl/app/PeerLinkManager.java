@@ -107,6 +107,16 @@ public final class PeerLinkManager {
             }
         }
     };
+    private final Runnable acceptRetry = new Runnable() {
+        @Override public void run() {
+            if (!host || !accepted || directConnected || !mqttConnected || acceptedJoinPublicKey == null || acceptRetryAttempts >= 3)
+                return;
+            ++acceptRetryAttempts;
+            publishAcceptMessage();
+            if (acceptRetryAttempts < 3)
+                handler.postDelayed(this, 2500);
+        }
+    };
     private final AtomicLong sendCounter = new AtomicLong(1);
     private final long[] receiveCounters = new long[] {0, 0};
     private final List<IceCandidate> pendingCandidates = Collections.synchronizedList(new ArrayList<>());
@@ -119,6 +129,8 @@ public final class PeerLinkManager {
     private String sessionId;
     private String salt;
     private String hostPublicKey;
+    private String acceptedJoinPublicKey;
+    private int acceptRetryAttempts;
     private String toHostTopic;
     private String toJoinTopic;
     private String relayHostTopic;
@@ -626,8 +638,23 @@ public final class PeerLinkManager {
         showStatus("Pairing", "Authenticating the other phone…");
     }
 
+    private boolean publishAcceptMessage() {
+        if (!host || !mqttConnected || acceptedJoinPublicKey == null || sessionId == null || pinKey == null)
+            return false;
+        try {
+            JSONObject accept = new JSONObject();
+            accept.put("type", "accept");
+            accept.put("session", sessionId);
+            accept.put("proof", hmacText(pinKey, sessionId + "|accept|" + acceptedJoinPublicKey));
+            return publish(toJoinTopic(), accept.toString().getBytes(StandardCharsets.UTF_8), 1, false);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private void handleJoinMessage(JSONObject join) throws Exception {
-        if (!"join".equals(join.optString("type")) || !sessionId.equals(join.optString("session")) || (accepted && directConnected))
+        if (!"join".equals(join.optString("type")) || sessionId == null
+            || !sessionId.equals(join.optString("session")) || (accepted && directConnected))
             return;
 
         String joinPublicKey = join.getString("pub");
@@ -635,17 +662,23 @@ public final class PeerLinkManager {
         if (!constantTimeEquals(expected, join.getString("proof")))
             return;
 
+        // A duplicate authenticated join should resend acceptance, not tear down
+        // an already-negotiating peer connection.
+        if (accepted && host && joinPublicKey.equals(acceptedJoinPublicKey)) {
+            publishAcceptMessage();
+            return;
+        }
+
+        handler.removeCallbacks(acceptRetry);
         resetPeerConnection();
         accepted = false;
         byte[] shared = deriveSharedSecret(ecdhKeyPair, joinPublicKey);
         sessionKey = deriveSessionKey(shared, pinKey, sessionId);
         accepted = true;
-        String acceptProof = hmacText(pinKey, sessionId + "|accept|" + joinPublicKey);
-        JSONObject accept = new JSONObject();
-        accept.put("type", "accept");
-        accept.put("session", sessionId);
-        accept.put("proof", acceptProof);
-        publish(toJoinTopic(), accept.toString().getBytes(StandardCharsets.UTF_8), 1, false);
+        acceptedJoinPublicKey = joinPublicKey;
+        acceptRetryAttempts = 0;
+        publishAcceptMessage();
+        handler.postDelayed(acceptRetry, 2500);
 
         updateNativeConnection();
         showStatus("Paired", "Connected. Establishing the direct phone-to-phone route…");
@@ -672,6 +705,8 @@ public final class PeerLinkManager {
         String value = signal.optString("value");
         if (sessionKey == null || !verifySignal(type, value, signal.optString("mac")))
             return;
+        handler.removeCallbacks(acceptRetry);
+        acceptedJoinPublicKey = null;
 
         if ("offer".equals(type) && !host) {
             SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, value);
@@ -1036,6 +1071,7 @@ public final class PeerLinkManager {
         if (currentActivity != null)
             PeerLinkKeepAliveService.stop(currentActivity);
         handler.removeCallbacks(roomHeartbeat);
+        handler.removeCallbacks(acceptRetry);
         handler.removeCallbacks(pcHeartbeat);
         handler.removeCallbacks(pcServerWatchdog);
         if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
@@ -1055,6 +1091,8 @@ public final class PeerLinkManager {
         accepted = false;
         nativeConnected = false;
         sessionKey = null;
+        acceptedJoinPublicKey = null;
+        acceptRetryAttempts = 0;
         pinKey = null;
         ecdhKeyPair = null;
         pendingCandidates.clear();
