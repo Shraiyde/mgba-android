@@ -475,7 +475,10 @@ static const SDL_Rect* _toggleRect(void) {
 }
 
 void mAndroidOverlaySetRomLoaded(bool loaded) {
-	overlay.romLoaded = loaded;
+	if (overlay.romLoaded != loaded) {
+		overlay.romLoaded = loaded;
+		_freeOverlayCache();
+	}
 }
 
 void mAndroidOverlaySetWindow(SDL_Window* window) {
