@@ -483,17 +483,17 @@ int main(int argc, char** argv) {
 
 	setenv("XDG_CONFIG_HOME", SDL_AndroidGetInternalStoragePath(), 1);
 
-	if (!args.fname) {
-		args.fname = mAndroidPickRom();
-		if (!args.fname) {
-			SDL_Quit();
-			mArgumentsDeinit(&args);
-			return 0;
-		}
+	// Create the GBA core and renderer before asking for a ROM. The app must
+	// remain open and usable even when the user has not selected a game yet.
+	if (args.fname) {
+		SDL_Log("Resolving ROM core for: %s", args.fname);
+		renderer.core = mCoreFind(args.fname);
+	} else {
+		renderer.core = mCoreCreate(mPLATFORM_GBA);
+		snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: NONE SELECTED");
+		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: WAITING FOR USER");
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
 	}
-
-	SDL_Log("Resolving ROM core for: %s", args.fname);
-	renderer.core = mCoreFind(args.fname);
 	if (!renderer.core) {
 		struct stat romInfo;
 		if (args.fname && stat(args.fname, &romInfo) == 0)
@@ -617,24 +617,81 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	sCoopMailboxNextScan = 0;
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
-	struct stat romInfo;
-	if (args->fname && stat(args->fname, &romInfo) == 0) {
-		snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FOUND | SIZE: %llu bytes", (unsigned long long) romInfo.st_size);
-	} else {
-		snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FILE NOT FOUND | PATH: %.120s", args->fname ? args->fname : "(null)");
+
+	// No ROM is a normal startup state. Keep SDL, the renderer, touch controls,
+	// and peer-link UI alive while the user chooses a game with the on-screen
+	// LOAD ROM control. A cancelled picker simply returns to this idle screen.
+	while (!args->fname) {
+		SDL_Event event;
+		while (SDL_PollEvent(&event)) {
+			mAndroidOverlayHandleEvent(&event);
+			if (event.type == SDL_QUIT) {
+				return 0;
+			}
+			if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F14) {
+				args->fname = mAndroidPickRom();
+				if (args->fname) break;
+			}
+			if (event.type == SDL_DROPFILE && event.drop.file) {
+				args->fname = strdup(event.drop.file);
+				SDL_free(event.drop.file);
+				if (args->fname) break;
+			}
+		}
+		if (args->fname) break;
+		SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
+		SDL_RenderClear(renderer->sdlRenderer);
+		mAndroidOverlayDraw(renderer->sdlRenderer, NULL);
+		SDL_RenderPresent(renderer->sdlRenderer);
+		SDL_Delay(16);
 	}
-	snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: IN PROGRESS");
-	snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
-	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, "FRAMES: waiting",
-		"EMULATION THREAD: not started", "VIDEO: checking attachment", sAndroidLastError);
-	SDL_Log("Loading ROM: %s", args->fname ? args->fname : "(null)");
-	if (!mCoreLoadFile(renderer->core, args->fname)) {
-		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: FAILED");
+
+	for (;;) {
+		struct stat romInfo;
+		if (args->fname && stat(args->fname, &romInfo) == 0) {
+			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FOUND | SIZE: %llu bytes", (unsigned long long) romInfo.st_size);
+		} else {
+			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FILE NOT FOUND | PATH: %.120s", args->fname ? args->fname : "(null)");
+		}
+		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: IN PROGRESS");
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
+		mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, "FRAMES: waiting",
+			"EMULATION THREAD: not started", "VIDEO: checking attachment", sAndroidLastError);
+		SDL_Log("Loading ROM: %s", args->fname ? args->fname : "(null)");
+		if (mCoreLoadFile(renderer->core, args->fname)) {
+			snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: SUCCESS");
+			break;
+		}
+		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: FAILED - SELECT ANOTHER");
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: mCoreLoadFile rejected selected ROM");
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreLoadFile failed for selected ROM: %s", args->fname ? args->fname : "(null)");
-		mSDLAndroidShowFailure(renderer, "mCoreLoadFile failed; check ROM path and file format", false);
-		return 1;
+		free(args->fname);
+		args->fname = NULL;
+		mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, "FRAMES: waiting",
+			"EMULATION THREAD: not started", "VIDEO: ready for ROM", sAndroidLastError);
+		while (!args->fname) {
+			SDL_Event event;
+			while (SDL_PollEvent(&event)) {
+				mAndroidOverlayHandleEvent(&event);
+				if (event.type == SDL_QUIT) return 0;
+				if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F14) {
+					args->fname = mAndroidPickRom();
+					if (args->fname) break;
+				}
+				if (event.type == SDL_DROPFILE && event.drop.file) {
+					args->fname = strdup(event.drop.file);
+					SDL_free(event.drop.file);
+					if (args->fname) break;
+				}
+			}
+			if (args->fname) break;
+			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
+			SDL_RenderClear(renderer->sdlRenderer);
+			mAndroidOverlayDraw(renderer->sdlRenderer, NULL);
+			SDL_RenderPresent(renderer->sdlRenderer);
+			SDL_Delay(16);
+		}
 	}
-	snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: SUCCESS");
 	// Reattach after loadROM: some core loaders reset their video state while
 	// initializing the cartridge, so the texture must be installed again.
 	if (renderer->outputBuffer && renderer->outputStride >= (int) renderer->width) {
