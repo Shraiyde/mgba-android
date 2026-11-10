@@ -109,6 +109,7 @@ create_game_texture:
 	}
 	renderer->outputStride = stride / BYTES_PER_PIXEL;
 	renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
+	renderer->videoBufferAttached = true;
 
 	return true;
 }
