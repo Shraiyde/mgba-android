@@ -630,7 +630,6 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	bool didFail = !mCoreThreadStart(&thread);
 	if (didFail) {
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: emulator thread failed to start");
-		mSDLAndroidSetError("EMULATOR THREAD FAILED TO START");
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreThreadStart failed; emulator core did not start");
 		mSDLAndroidShowFailure(renderer, "mCoreThreadStart failed; emulator did not start");
 	} else {
@@ -651,16 +650,17 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 			thread.impl->sync.audioWait = false;
 			MutexUnlock(&thread.impl->sync.audioBufferMutex);
 		} else {
-			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "AUDIO: initialized; audio sync enabled");
+			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
 		}
 		renderer->runloop(renderer, &thread);
 		if (renderer->audioInitialized)
 			mSDLPauseAudio(&renderer->audio);
 		if (mCoreThreadHasCrashed(&thread)) {
 			didFail = true;
-			mSDLAndroidSetError("EMULATOR THREAD CRASHED");
+			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: emulator thread crashed");
 			printf("The game crashed!\\n");
 			mCoreThreadEnd(&thread);
+			mSDLAndroidShowFailure(renderer, "The emulation thread crashed; see the on-screen status");
 		}
 		mSDLResumeScreensaver(&renderer->events);
 		mSDLSetScreensaverSuspendable(&renderer->events, false);
