@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "android-ui.h"
+#include "android-peer-jni.h"
 
 #include <jni.h>
 #include <SDL_system.h>
@@ -382,6 +383,15 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	out[n].label = "SELECT";
 	++n;
 
+	// Always-visible co-op entry point, separate from the emulator buttons.
+	out[n].rect.x = w / 2 - cell;
+	out[n].rect.y = 8;
+	out[n].rect.w = cell * 2;
+	out[n].rect.h = cell;
+	out[n].key = SDLK_F13;
+	out[n].label = "LINK";
+	++n;
+
 	return n;
 }
 
@@ -463,6 +473,10 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 		for (i = 0; i < n; ++i) {
 			if (x >= buttons[i].rect.x && x < buttons[i].rect.x + buttons[i].rect.w &&
 			    y >= buttons[i].rect.y && y < buttons[i].rect.y + buttons[i].rect.h) {
+				if (buttons[i].key == SDLK_F13) {
+					mAndroidPeerJniShowDialog();
+					return;
+				}
 				int slot;
 				for (slot = 0; slot < MAX_TOUCHES; ++slot) {
 					if (overlay.touches[slot].id == -1) {
@@ -502,7 +516,7 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 			overlay.touches[i].id = -1;
 		} else if (!target || target->key != overlay.touches[i].key) {
 			_pushKey(overlay.touches[i].key, false);
-			overlay.touches[i].id = 0;
+			overlay.touches[i].id = -1;
 			if (target) {
 				overlay.touches[i].id = id;
 				overlay.touches[i].key = target->key;
