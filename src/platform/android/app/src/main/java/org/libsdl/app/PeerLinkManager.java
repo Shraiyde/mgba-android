@@ -192,6 +192,10 @@ public final class PeerLinkManager {
                     startHost(savedPin, savedSession);
                 else if ("Reconnect".equals(choice))
                     startJoin(savedPin);
+                else if ("Play Offline".equals(choice)) {
+                    closeCurrentSession(true);
+                    showStatus("Offline mode", "The co-op session has been stopped.");
+                }
             })
             .show();
     }
@@ -994,7 +998,7 @@ public final class PeerLinkManager {
         handler.removeCallbacks(pcServerWatchdog);
         if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
             publish(pcUpLeaveTopic(), pcAuthSignal("leave"), 0, false);
-        if (clearPreferences && host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
+        if (host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
             publish(roomTopic(), new byte[0], 1, true);
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
