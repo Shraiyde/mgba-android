@@ -439,8 +439,12 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     SDLActivity.onNativeDropFile(filename);
                 }
             } else if ("content".equalsIgnoreCase(uri.getScheme())) {
-                Log.i(TAG, "Open-with supplied a document URI; asking user to select ROM through SAF");
-                openRomPicker();
+                // The native SDL loop is not running yet during onCreate, so
+                // opening the picker here would leave its result unconsumed.
+                // Keep startup alive and let the visible LOAD ROM control
+                // launch SAF once the emulator idle screen is active.
+                Log.w(TAG, "Open-with supplied a content URI; use the in-app LOAD ROM control");
+                Toast.makeText(this, "Use LOAD ROM to select this document.", Toast.LENGTH_LONG).show();
             } else {
                 Toast.makeText(this, "Unsupported ROM location. Use LOAD ROM to select it.", Toast.LENGTH_LONG).show();
             }
