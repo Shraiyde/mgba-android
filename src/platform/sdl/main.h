@@ -32,6 +32,7 @@ struct mSDLRenderer {
 	struct mCore* core;
 	mColor* outputBuffer;
 	int outputStride;
+	bool videoBufferAttached;
 
 	struct mSDLAudio audio;
 	struct mSDLEvents events;
