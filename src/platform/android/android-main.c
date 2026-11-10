@@ -106,29 +106,36 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 	snprintf(threadStatus, sizeof(threadStatus), "EMULATION THREAD: %s",
 		threadCrashed ? "CRASHED" : (threadActive ? "RUNNING" : "STOPPED"));
 	if (gba && cpu && gba->sync) {
-		int pending;
-		bool videoWait;
-		uint32_t postCount, startCount, acceptedCount, endCount;
-		MutexLock(&gba->sync->videoFrameMutex);
-		pending = gba->sync->videoFramePending;
-		videoWait = gba->sync->videoFrameWait;
-		postCount = gba->sync->videoPostCount;
-		startCount = gba->sync->videoStartCount;
-		acceptedCount = gba->sync->videoAcceptedCount;
-		endCount = gba->sync->videoEndCount;
-		MutexUnlock(&gba->sync->videoFrameMutex);
+		// Diagnostics must never block the Android renderer. The emulation
+		// thread can hold this mutex while waiting for the UI to accept a frame;
+		// blocking here would prevent the UI from reaching WaitFrameStart.
+		static int pending;
+		static bool videoWait;
+		static uint32_t postCount, startCount, acceptedCount, endCount;
+		static bool haveSyncSnapshot;
+		if (MutexTryLock(&gba->sync->videoFrameMutex) == 0) {
+			pending = gba->sync->videoFramePending;
+			videoWait = gba->sync->videoFrameWait;
+			postCount = gba->sync->videoPostCount;
+			startCount = gba->sync->videoStartCount;
+			acceptedCount = gba->sync->videoAcceptedCount;
+			endCount = gba->sync->videoEndCount;
+			MutexUnlock(&gba->sync->videoFrameMutex);
+			haveSyncSnapshot = true;
+		}
 		snprintf(videoStatus, sizeof(videoStatus),
 			"CPU %s PC=%08X CYC=%d NEXT=%d HLT=%d | V=%d F=%u P=%d W=%d A=%u/%u E=%u",
 			cycleDelta ? "ADVANCING" : (havePreviousSample ? "STALLED" : "CHECKING"),
 			pc, cpu->cycles, cpu->nextEvent, cpu->halted, gba->video.vcount,
-			gba->video.frameCounter, pending, videoWait, acceptedCount, startCount, endCount);
+			gba->video.frameCounter, haveSyncSnapshot ? pending : -1, videoWait,
+			acceptedCount, startCount, endCount);
 		SDL_Log("GBA diagnostic: pc=%08X pcMoved=%d cycles=%d nextEvent=%d globalCycles=%llu delta=%llu halted=%d vcount=%d vMoved=%d frames=%u videoEvent=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
 			pc, pcMoved, cpu->cycles, cpu->nextEvent, (unsigned long long) globalCycles,
 			(unsigned long long) cycleDelta, cpu->halted, gba->video.vcount, scanlineMoved,
 			gba->video.frameCounter, gba->video.event.callback ? "scheduled" : "missing",
 			gba->video.event.when, (void*) gba->timing.root, gba->cpuBlocked,
 			(void*) gba->memory.rom, gba->memory.romSize, gba->memory.fullBios,
-			pending, videoWait, postCount, startCount, acceptedCount, endCount);
+			haveSyncSnapshot ? pending : -1, videoWait, postCount, startCount, acceptedCount, endCount);
 		previousGlobalCycles = globalCycles;
 		previousPC = pc;
 		previousVcount = gba->video.vcount;
