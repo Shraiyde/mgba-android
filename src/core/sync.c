@@ -69,9 +69,14 @@ bool mCoreSyncWaitFrameStart(struct mCoreSync* sync) {
 		return false;
 	}
 	if (sync->videoFrameWait) {
+		// A frame may already be pending before the renderer enters this
+		// function. In that case, accept it immediately instead of waiting
+		// for a condition signal that was sent before we started waiting.
 		ConditionWake(&sync->videoFrameRequiredCond);
-		if (ConditionWaitTimed(&sync->videoFrameAvailableCond, &sync->videoFrameMutex, 50)) {
-			return false;
+		while (!sync->videoFramePending) {
+			if (ConditionWaitTimed(&sync->videoFrameAvailableCond, &sync->videoFrameMutex, 50)) {
+				return false;
+			}
 		}
 	}
 	sync->videoFramePending = 0;
