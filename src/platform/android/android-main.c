@@ -17,6 +17,8 @@
 #include <mgba/core/serialize.h>
 #include <mgba/core/thread.h>
 #include <mgba/internal/gba/input.h>
+#include <mgba/internal/gba/gba.h>
+#include <mgba/internal/arm/arm.h>
 #include <mgba/feature/commandline.h>
 #include <mgba-util/vfs.h>
 
@@ -87,13 +89,44 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 	char frameStatus[192];
 	char threadStatus[96];
 	char videoStatus[192];
+	static uint64_t previousGlobalCycles;
+	static uint32_t previousPC;
+	static int previousVcount;
+	static bool havePreviousSample;
+	struct GBA* gba = renderer && renderer->core ? (struct GBA*) renderer->core->board : NULL;
+	struct ARMCore* cpu = renderer && renderer->core ? renderer->core->cpu : NULL;
+	uint64_t globalCycles = gba ? mTimingGlobalTime(&gba->timing) : 0;
+	uint32_t pc = cpu ? (uint32_t) cpu->gprs[ARM_PC] : 0;
+	uint64_t cycleDelta = havePreviousSample && globalCycles >= previousGlobalCycles
+		? globalCycles - previousGlobalCycles : 0;
+	bool pcMoved = havePreviousSample && pc != previousPC;
+	bool scanlineMoved = havePreviousSample && gba && gba->video.vcount != previousVcount;
 	snprintf(frameStatus, sizeof(frameStatus), "FRAMES: %u | LATEST FRAME ALL BLACK: %s",
 		frames, frames ? (frameBlack ? "YES" : "NO") : "WAITING");
 	snprintf(threadStatus, sizeof(threadStatus), "EMULATION THREAD: %s",
 		threadCrashed ? "CRASHED" : (threadActive ? "RUNNING" : "STOPPED"));
-	snprintf(videoStatus, sizeof(videoStatus), "VIDEO: CORE BUFFER %s | SDL PRESENTED %s",
-		renderer && renderer->videoBufferAttached ? "ATTACHED" : "NOT ATTACHED",
-		presented ? "YES" : "NO");
+	if (gba && cpu) {
+		snprintf(videoStatus, sizeof(videoStatus),
+			"CPU %s PC=%08X CYC=%d NEXT=%d HLT=%d | V=%d %s F=%u EV=%s BIOS=%d",
+			cycleDelta ? "ADVANCING" : (havePreviousSample ? "STALLED" : "CHECKING"),
+			pc, cpu->cycles, cpu->nextEvent, cpu->halted, gba->video.vcount,
+			scanlineMoved ? "V-MOVE" : "V-STATIC", gba->video.frameCounter,
+			gba->video.event.callback ? "SCHEDULED" : "MISSING", gba->memory.fullBios);
+		SDL_Log("GBA diagnostic: pc=%08X pcMoved=%d cycles=%d nextEvent=%d globalCycles=%llu delta=%llu halted=%d vcount=%d vMoved=%d frames=%u videoEvent=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d",
+			pc, pcMoved, cpu->cycles, cpu->nextEvent, (unsigned long long) globalCycles,
+			(unsigned long long) cycleDelta, cpu->halted, gba->video.vcount, scanlineMoved,
+			gba->video.frameCounter, gba->video.event.callback ? "scheduled" : "missing",
+			gba->video.event.when, (void*) gba->timing.root, gba->cpuBlocked,
+			(void*) gba->memory.rom, gba->memory.romSize, gba->memory.fullBios);
+		previousGlobalCycles = globalCycles;
+		previousPC = pc;
+		previousVcount = gba->video.vcount;
+		havePreviousSample = true;
+	} else {
+		snprintf(videoStatus, sizeof(videoStatus), "VIDEO: CORE STATE UNAVAILABLE | BUFFER %s | SDL %s",
+			renderer && renderer->videoBufferAttached ? "ATTACHED" : "MISSING",
+			presented ? "PRESENTED" : "NOT PRESENTED");
+	}
 	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, frameStatus,
 		threadStatus, videoStatus, sAndroidLastError);
 }
