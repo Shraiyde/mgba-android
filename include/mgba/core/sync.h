@@ -14,6 +14,10 @@ CXX_GUARD_START
 
 struct mCoreSync {
 	int videoFramePending;
+	uint32_t videoPostCount;
+	uint32_t videoStartCount;
+	uint32_t videoAcceptedCount;
+	uint32_t videoEndCount;
 	bool videoFrameWait;
 	Mutex videoFrameMutex;
 	Condition videoFrameAvailableCond;
