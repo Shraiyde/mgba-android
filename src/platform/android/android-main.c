@@ -85,7 +85,7 @@ static bool mSDLAndroidFrameIsBlack(const struct mSDLRenderer* renderer) {
 	return true;
 }
 
-static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigned frames, bool frameBlack, bool threadActive, bool threadCrashed, bool presented, double coreFps, double drawFps, double waitMs, double uploadMs, double presentMs, double coopMs) {
+static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigned frames, bool frameBlack, bool threadActive, bool threadCrashed, bool presented, double coreFps, double drawFps, double waitMs, double uploadMs, double drawMs, double presentMs, double coopMs) {
 	char frameStatus[192];
 	char threadStatus[96];
 	char videoStatus[192];
@@ -112,8 +112,8 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		}
 		SDL_RendererInfo info;
 		const char* rendererName = SDL_GetRendererInfo(renderer->sdlRenderer, &info) == 0 ? info.name : "unknown";
-		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f P%.1f C%.1fms V=%d Q=%d",
-			rendererName ? rendererName : "unknown", waitMs, uploadMs, presentMs, coopMs,
+		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1fms V=%d Q=%d",
+			rendererName ? rendererName : "unknown", waitMs, uploadMs, drawMs, presentMs, coopMs,
 			gba->video.vcount, haveSyncSnapshot ? pending : -1);
 		SDL_Log("GBA diagnostic: fpsCore=%.2f fpsDraw=%.2f waitMs=%.3f uploadMs=%.3f presentMs=%.3f coopMs=%.3f renderer=%s pc=%08X cycles=%d nextEvent=%d halted=%d vcount=%d frames=%u event=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
 			coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs, rendererName ? rendererName : "unknown",
@@ -134,7 +134,7 @@ static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* er
 	if (error && error[0])
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: %.180s", error);
 	mSDLAndroidUpdateDebugOverlay(renderer, renderer->core && renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0,
-		mSDLAndroidFrameIsBlack(renderer), false, threadCrashed, false, 0, 0, 0, 0, 0, 0);
+		mSDLAndroidFrameIsBlack(renderer), false, threadCrashed, false, 0, 0, 0, 0, 0, 0, 0);
 	bool dismissed = false;
 	while (!dismissed) {
 		SDL_Event event;
@@ -450,7 +450,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	bool lastFramePresented = false;
 	Uint64 perfFrequency = SDL_GetPerformanceFrequency();
 	Uint64 lastPerfSample = SDL_GetPerformanceCounter();
-	Uint64 waitTicks = 0, uploadTicks = 0, presentTicks = 0, coopTicks = 0;
+	Uint64 waitTicks = 0, uploadTicks = 0, drawTicks = 0, presentTicks = 0, coopTicks = 0;
 	Uint64 lastCoreFrames = renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0;
 	Uint64 presentedFrames = 0, lastPresentedFrames = 0;
 
@@ -471,6 +471,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			double drawFps = seconds > 0 ? drawDelta / seconds : 0;
 			double waitMs = perfFrequency ? (double)waitTicks * 1000.0 / perfFrequency / (coreDelta ? coreDelta : 1) : 0;
 			double uploadMs = perfFrequency ? (double)uploadTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
+			double drawMs = perfFrequency ? (double)drawTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
 			double presentMs = perfFrequency ? (double)presentTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
 			double coopMs = perfFrequency ? (double)coopTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
 			lastDiagnostics = now;
@@ -480,10 +481,10 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			bool active = mCoreThreadIsActive(context);
 			bool crashed = mCoreThreadHasCrashed(context);
 			mSDLAndroidUpdateDebugOverlay(renderer, frames, latestFrameBlack, active, crashed, lastFramePresented,
-				coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs);
+				coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs);
 			SDL_Log("Android emulator heartbeat: frame=%u coreFPS=%.2f drawFPS=%.2f wait=%.3fms upload=%.3fms present=%.3fms coop=%.3fms active=%d crashed=%d black=%d",
-				frames, coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs, active, crashed, latestFrameBlack);
-			waitTicks = uploadTicks = presentTicks = coopTicks = 0;
+				frames, coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, active, crashed, latestFrameBlack);
+			waitTicks = uploadTicks = drawTicks = presentTicks = coopTicks = 0;
 		}
 		while (SDL_PollEvent(&event)) {
 			mAndroidOverlayHandleEvent(&event);
@@ -504,6 +505,8 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			mCoreSyncWaitFrameEnd(&context->impl->sync);
 
 			uploadTicks += SDL_GetPerformanceCounter() - stageStart;
+			stageStart = SDL_GetPerformanceCounter();
+
 			SDL_Rect dest;
 			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
 			dest.h = renderer->viewportHeight;
@@ -563,6 +566,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				}
 			}
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
+			drawTicks += SDL_GetPerformanceCounter() - stageStart;
 			stageStart = SDL_GetPerformanceCounter();
 			SDL_RenderPresent(renderer->sdlRenderer);
 			presentTicks += SDL_GetPerformanceCounter() - stageStart;
