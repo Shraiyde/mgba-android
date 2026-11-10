@@ -377,7 +377,10 @@ static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 	renderer->window = SDL_CreateWindow("mGBA", renderer->viewportWidth, renderer->viewportHeight, SDL_WINDOW_FULLSCREEN * renderer->player.fullscreen);
 	renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, NULL);
-	SDL_SetRenderVSync(renderer->sdlRenderer, 1);
+	// Core video synchronization owns frame pacing. Avoid a second blocking
+	// VSync wait in SDL_RenderPresent, which can stall the emulation thread's
+	// frame acknowledgement and starve the audio producer.
+	SDL_SetRenderVSync(renderer->sdlRenderer, 0);
 #else
 	renderer->window = SDL_CreateWindow("mGBA", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
 		renderer->viewportWidth, renderer->viewportHeight,
@@ -385,7 +388,7 @@ static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
 	if (!renderer->window)
 		return false;
 	renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1,
-		SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+		SDL_RENDERER_ACCELERATED);
 	if (!renderer->sdlRenderer) {
 		renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_SOFTWARE);
 		softwareRenderer = true;
@@ -500,7 +503,8 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			}
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
 			SDL_RenderPresent(renderer->sdlRenderer);
-			SDL_Delay(16);
+			// WaitFrameStart already blocks on the frame condition (with a
+			// bounded timeout). Do not add a second fixed sleep here.
 			continue;
 		}
 
@@ -573,8 +577,10 @@ int main(int argc, char** argv) {
 
 	struct mCoreOptions opts = {
 		.useBios = true,
-		.rewindEnable = true,
-		.rewindBufferCapacity = 600,
+		// Disable per-frame rewind serialization on Android until the
+		// emulator's real-time audio/video path is stable.
+		.rewindEnable = false,
+		.rewindBufferCapacity = 0,
 		.rewindBufferInterval = 1,
 		.audioBuffers = 1024,
 		.videoSync = true,
