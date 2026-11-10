@@ -256,7 +256,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0,
 				mCoreThreadIsActive(context), mCoreThreadHasCrashed(context), renderer->outputBuffer,
 				renderer->outputBuffer ? (unsigned) renderer->outputBuffer[0] : 0,
-				renderer->outputBuffer ? (unsigned) renderer->outputBuffer[(renderer->height / 2) * (renderer->width) + (renderer->width / 2)] : 0);
+				renderer->outputBuffer ? (unsigned) renderer->outputBuffer[(renderer->height / 2) * renderer->outputStride + (renderer->width / 2)] : 0);
 		}
 		while (SDL_PollEvent(&event)) {
 			mAndroidOverlayHandleEvent(&event);
@@ -329,7 +329,8 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				mCoreSyncWaitFrameEnd(&context->impl->sync);
 				break;
 			}
-			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, stride / BYTES_PER_PIXEL);
+			renderer->outputStride = stride / BYTES_PER_PIXEL;
+			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
 			mSDLAndroidUpdateCoopMailbox(renderer->core);
 		}
 		mCoreSyncWaitFrameEnd(&context->impl->sync);
