@@ -666,15 +666,18 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		mSDLSuspendScreensaver(&renderer->events);
 		renderer->audioInitialized = mSDLInitAudio(&renderer->audio, &thread);
 		if (!renderer->audioInitialized) {
-			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: audio init failed: %.130s", SDL_GetError());
-			SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Audio initialization failed; keeping audio synchronization enabled: %s", SDL_GetError());
-			mCoreThreadEnd(&thread);
-			didFail = true;
-			mSDLAndroidShowFailure(renderer, "Audio initialization failed; audio synchronization remains enabled");
+			// If Android exposes no audio device, keep gameplay/video alive.
+			// Audio sync is restored by default and disabled only for this
+			// hardware-failure fallback because there is no consumer to drain it.
+			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: AUDIO UNAVAILABLE - VIDEO-ONLY FALLBACK");
+			SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Audio initialization failed; continuing video without audio: %s", SDL_GetError());
+			MutexLock(&thread.impl->sync.audioBufferMutex);
+			thread.impl->sync.audioWait = false;
+			MutexUnlock(&thread.impl->sync.audioBufferMutex);
 		} else {
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
-			renderer->runloop(renderer, &thread);
 		}
+		renderer->runloop(renderer, &thread);
 		if (renderer->audioInitialized)
 			mSDLPauseAudio(&renderer->audio);
 		if (mCoreThreadHasCrashed(&thread)) {
