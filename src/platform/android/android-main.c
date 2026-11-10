@@ -28,6 +28,7 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static struct mStandardLogger _logger;
 static struct mPeerLink* sPeerLink;
@@ -347,6 +348,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			}
 			renderer->outputStride = stride / BYTES_PER_PIXEL;
 			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
+			renderer->videoBufferAttached = true;
 			mSDLAndroidApplyPendingPeerState();
 			mSDLAndroidUpdateCoopMailbox(renderer->core);
 		}
@@ -378,10 +380,8 @@ int main(int argc, char** argv) {
 		.rewindBufferCapacity = 600,
 		.rewindBufferInterval = 1,
 		.audioBuffers = 1024,
-		.videoSync = false,
-		// Video must remain independent of audio-device callback timing.
-		// This Android baseline intentionally runs audio asynchronously.
-		.audioSync = false,
+		.videoSync = true,
+		.audioSync = true,
 		.volume = 0x100,
 		.logLevel = mLOG_WARN | mLOG_ERROR | mLOG_FATAL,
 		.fullscreen = 1,
