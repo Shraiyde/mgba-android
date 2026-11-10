@@ -593,11 +593,24 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	sCoopMailboxNextScan = 0;
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
+	struct stat romInfo;
+	if (args->fname && stat(args->fname, &romInfo) == 0) {
+		snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FOUND | SIZE: %llu bytes", (unsigned long long) romInfo.st_size);
+	} else {
+		snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: FILE NOT FOUND | PATH: %.120s", args->fname ? args->fname : "(null)");
+	}
+	snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: IN PROGRESS");
+	snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
+	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, "FRAMES: waiting",
+		"EMULATION THREAD: not started", "VIDEO: checking attachment", sAndroidLastError);
 	SDL_Log("Loading ROM: %s", args->fname ? args->fname : "(null)");
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
-		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreLoadFile failed for selected ROM");
+		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: FAILED");
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreLoadFile failed for selected ROM: %s", args->fname ? args->fname : "(null)");
+		mSDLAndroidShowFailure(renderer, "mCoreLoadFile failed; check ROM path and file format");
 		return 1;
 	}
+	snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: SUCCESS");
 	SDL_Log("ROM loaded successfully: %s", args->fname);
 	if (sLinkCable)
 		mAndroidLinkCableAttach(renderer->core, sLinkCable);
@@ -610,7 +623,9 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 
 	bool didFail = !mCoreThreadStart(&thread);
 	if (didFail) {
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: emulator thread failed to start");
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreThreadStart failed; emulator core did not start");
+		mSDLAndroidShowFailure(renderer, "mCoreThreadStart failed; emulator did not start");
 	} else {
 		SDL_Log("Emulator core thread started successfully");
 	}
@@ -620,12 +635,16 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		mSDLSuspendScreensaver(&renderer->events);
 		renderer->audioInitialized = mSDLInitAudio(&renderer->audio, &thread);
 		if (!renderer->audioInitialized) {
-			// Audio is optional on Android. A missing or unavailable audio
-			// device must never prevent video and touch controls from running.
+			// Keep the emulator running if Android exposes no audio device, but
+			// surface the failure. Audio/video synchronization remains enabled
+			// in the core options and is only bypassed for this unavailable device.
+			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: audio init failed: %.130s", SDL_GetError());
 			printf("Audio unavailable; continuing with video only: %s\n", SDL_GetError());
 			MutexLock(&thread.impl->sync.audioBufferMutex);
 			thread.impl->sync.audioWait = false;
 			MutexUnlock(&thread.impl->sync.audioBufferMutex);
+		} else {
+			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "AUDIO: initialized; audio sync enabled");
 		}
 		renderer->runloop(renderer, &thread);
 		if (renderer->audioInitialized)
