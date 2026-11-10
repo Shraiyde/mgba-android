@@ -336,7 +336,7 @@ public final class PeerLinkManager {
                         handler.postDelayed(pcServerWatchdog, 10000);
                         // Re-authenticate after a broker reconnect; subscriptions alone
                         // do not restore the PC server's accepted session.
-                        handler.post(this::sendPcHello);
+                        handler.post(PeerLinkManager.this::sendPcHello);
                     } else if (host) {
                         subscribe(toHostTopic(), relayHostTopic());
                         publishRoomAdvertisement();
