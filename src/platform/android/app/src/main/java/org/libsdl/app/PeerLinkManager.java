@@ -48,6 +48,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
@@ -72,6 +76,15 @@ public final class PeerLinkManager {
     private static Activity activity;
     private static PeerLinkManager instance;
     private static boolean webRtcInitialized;
+    // Native emulation/render threads must never wait on MQTT/WebRTC work.
+    // A single bounded sender preserves frame ordering and caps queued memory.
+    private static final ThreadPoolExecutor frameSender = new ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(128),
+        task -> {
+            Thread thread = new Thread(task, "HNS-Peer-Send");
+            thread.setDaemon(true);
+            return thread;
+        }, new ThreadPoolExecutor.AbortPolicy());
 
     private final SecureRandom random = new SecureRandom();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -871,11 +884,20 @@ public final class PeerLinkManager {
 
     public static boolean sendFrame(byte[] frame) {
         PeerLinkManager manager = instance;
-        return manager != null && manager.sendFrameInternal(frame);
+        if (manager == null || frame == null || !manager.accepted || manager.sessionKey == null)
+            return false;
+        final byte[] queuedFrame = frame.clone();
+        final byte[] queuedSessionKey = manager.sessionKey;
+        try {
+            frameSender.execute(() -> manager.sendFrameInternal(queuedFrame, queuedSessionKey));
+            return true;
+        } catch (RejectedExecutionException full) {
+            return false;
+        }
     }
 
-    private synchronized boolean sendFrameInternal(byte[] frame) {
-        if (!accepted || sessionKey == null || frame == null)
+    private synchronized boolean sendFrameInternal(byte[] frame, byte[] expectedSessionKey) {
+        if (!accepted || sessionKey == null || sessionKey != expectedSessionKey || frame == null)
             return false;
         try {
             byte[] encrypted = encryptFrame(frame);
@@ -1065,6 +1087,7 @@ public final class PeerLinkManager {
     }
 
     private void closeCurrentSession(boolean clearPreferences) {
+        frameSender.getQueue().clear();
         boolean wasConnected = nativeConnected;
         retryEnabled = false;
         Activity currentActivity = activity;
