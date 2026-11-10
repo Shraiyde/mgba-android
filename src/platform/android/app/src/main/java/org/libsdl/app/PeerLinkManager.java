@@ -330,6 +330,9 @@ public final class PeerLinkManager {
                         handler.removeCallbacks(pcHeartbeat);
                         handler.removeCallbacks(pcServerWatchdog);
                         handler.postDelayed(pcServerWatchdog, 10000);
+                        // Re-authenticate after a broker reconnect; subscriptions alone
+                        // do not restore the PC server's accepted session.
+                        handler.post(this::sendPcHello);
                     } else if (host) {
                         subscribe(toHostTopic(), relayHostTopic());
                         publishRoomAdvertisement();
