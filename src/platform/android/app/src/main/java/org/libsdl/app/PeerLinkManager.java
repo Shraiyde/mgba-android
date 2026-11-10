@@ -558,9 +558,13 @@ public final class PeerLinkManager {
     }
 
     private void handlePcServerControl(JSONObject envelope) throws Exception {
-        if (!pcServerMode || !sessionId.equals(envelope.optString("session")))
+        if (!pcServerMode || sessionId == null || pinKey == null
+            || !sessionId.equals(envelope.optString("session")))
             return;
         String type = envelope.optString("type");
+        String expectedAuth = hmacText(pinKey, sessionId + "|" + pcClientId + "|" + type);
+        if (!constantTimeEquals(expectedAuth, envelope.optString("auth")))
+            return;
         JSONObject data = envelope.optJSONObject("data");
         if ("server-heartbeat".equals(type)) {
             lastPcServerHeartbeatAt = System.currentTimeMillis();
