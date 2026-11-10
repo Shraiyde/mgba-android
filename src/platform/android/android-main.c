@@ -474,8 +474,6 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 		}
 
 		if (!mCoreSyncWaitFrameStart(&context->impl->sync)) {
-			// The core is waiting on this sync lock; apply mailbox reads/writes here
-			// so the game bus is never accessed concurrently with CPU execution.
 			// Connection state can be applied while idle, but game-bus mailbox
 			// access is deferred until a frame boundary below. This path may run
 			// while the CPU is executing, so it must not inspect or modify the bus.
@@ -513,8 +511,8 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL_UpdateTexture: %.150s", SDL_GetError());
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android framebuffer upload failed: %s", SDL_GetError());
 				lastFramePresented = false;
-				mCoreThreadEnd(context);
 				mCoreSyncWaitFrameEnd(&context->impl->sync);
+				mCoreThreadEnd(context);
 				break;
 			}
 
