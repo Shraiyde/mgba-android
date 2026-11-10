@@ -134,7 +134,7 @@ static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* er
 	if (error && error[0])
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: %.180s", error);
 	mSDLAndroidUpdateDebugOverlay(renderer, renderer->core && renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0,
-		mSDLAndroidFrameIsBlack(renderer), false, threadCrashed, false);
+		mSDLAndroidFrameIsBlack(renderer), false, threadCrashed, false, 0, 0, 0, 0, 0, 0);
 	bool dismissed = false;
 	while (!dismissed) {
 		SDL_Event event;
