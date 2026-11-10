@@ -240,6 +240,7 @@ static struct {
 	} touches[MAX_TOUCHES];
     SDL_Rect lastView;
     bool hasLastView;
+    bool touchesInitialized;
 } overlay;
 
 static struct {
