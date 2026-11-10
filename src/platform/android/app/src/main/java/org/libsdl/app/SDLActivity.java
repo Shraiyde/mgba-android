@@ -426,9 +426,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(this);
 
-        // Android document providers commonly deliver content:// URIs, not
-        // filesystem paths. Stage those through ContentResolver before passing
-        // a real readable path to SDL/mGBA.
+        // Only file:// URIs are filesystem paths. Android document providers
+        // normally supply content:// URIs, which must go through SAF instead
+        // of passing Uri.getPath() to mGBA as if it were a real file.
         Intent intent = getIntent();
         if (intent != null && intent.getData() != null) {
             Uri uri = intent.getData();
@@ -439,11 +439,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     SDLActivity.onNativeDropFile(filename);
                 }
             } else if ("content".equalsIgnoreCase(uri.getScheme())) {
-                Log.i(TAG, "Importing ROM supplied by another application: " + uri);
-                stageRomDocument(uri, true);
+                Log.i(TAG, "Open-with supplied a document URI; asking user to select ROM through SAF");
+                openRomPicker();
             } else {
-                Log.w(TAG, "Ignoring unsupported ROM URI scheme: " + uri.getScheme());
-                Toast.makeText(this, "Unsupported ROM file location. Use LOAD ROM to select it.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Unsupported ROM location. Use LOAD ROM to select it.", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -452,24 +451,14 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     public void openRomPicker() {
         pickedRomPath = null;
         runOnUiThread(() -> {
-            if (isFinishing() || (Build.VERSION.SDK_INT >= 17 && isDestroyed())) {
-                pickedRomPath = "__CANCELLED__";
-                return;
-            }
-            try {
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType("*/*");
-                intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
-                    "application/octet-stream", "application/x-gba-rom", "application/zip"
-                });
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                startActivityForResult(intent, ROM_PICKER_REQUEST);
-            } catch (Exception error) {
-                Log.e(TAG, "Could not launch ROM document picker", error);
-                pickedRomPath = "__ERROR__:Could not open Android file picker";
-                Toast.makeText(SDLActivity.this, "Could not open Android file picker", Toast.LENGTH_LONG).show();
-            }
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+                "application/octet-stream", "application/x-gba-rom", "application/zip"
+            });
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(intent, ROM_PICKER_REQUEST);
         });
     }
 
@@ -486,26 +475,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             return;
         }
         Uri uri = data.getData();
-        stageRomDocument(uri, false);
-    }
-
-    /** Copy a document-provider URI to app cache, then publish only a verified path. */
-    private void stageRomDocument(Uri uri, boolean sendToNative) {
-        if (uri == null) {
-            if (!sendToNative) pickedRomPath = "__ERROR__:Selected document URI was empty";
-            return;
-        }
         try {
             getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
-            // ACTION_VIEW providers often grant a temporary read permission only.
         }
         new Thread(() -> {
             File romDir = new File(getCacheDir(), "selected-roms");
-            if (!romDir.exists() && !romDir.mkdirs() && !romDir.isDirectory()) {
-                publishRomImportError(sendToNative, "Unable to create ROM cache directory");
-                return;
-            }
+            if (!romDir.exists()) romDir.mkdirs();
             String displayName = "selected_rom.gba";
             try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
                 if (cursor != null && cursor.moveToFirst()) {
@@ -532,28 +508,22 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     output.flush();
                     output.getFD().sync();
                 }
+
+                // Publish the path only after both streams have closed and the
+                // complete staged file has been verified on disk.
                 if (!destination.isFile() || copiedBytes <= 0 || destination.length() != copiedBytes) {
                     throw new IllegalStateException("Imported ROM is empty or incomplete");
                 }
-                String path = destination.getAbsolutePath();
-                Log.i(TAG, "ROM import complete: " + path + " (" + copiedBytes + " bytes)");
-                if (sendToNative) {
-                    SDLActivity.onNativeDropFile(path);
-                } else {
-                    pickedRomPath = path;
-                }
+                Log.i(TAG, "ROM import complete: " + destination.getAbsolutePath()
+                        + " (" + copiedBytes + " bytes)");
+                pickedRomPath = destination.getAbsolutePath();
             } catch (Exception error) {
                 Log.e(TAG, "Could not import selected ROM", error);
-                String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-                publishRomImportError(sendToNative, message);
+                pickedRomPath = "__ERROR__:" + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
+                final String errorText = "Could not import ROM: " + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
+                runOnUiThread(() -> Toast.makeText(SDLActivity.this, errorText, Toast.LENGTH_LONG).show());
             }
         }, "ROM-Import").start();
-    }
-
-    private void publishRomImportError(boolean sendToNative, String message) {
-        if (!sendToNative) pickedRomPath = "__ERROR__:" + message;
-        final String errorText = "Could not import ROM: " + message;
-        runOnUiThread(() -> Toast.makeText(SDLActivity.this, errorText, Toast.LENGTH_LONG).show());
     }
 
     protected void pauseNativeThread() {
@@ -709,11 +679,6 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     protected void onDestroy() {
         Log.v(TAG, "onDestroy()");
-        // Wake a native ROM-picker wait if Android tears down this Activity
-        // before ACTION_OPEN_DOCUMENT returns a result.
-        if (pickedRomPath == null) {
-            pickedRomPath = "__CANCELLED__";
-        }
 
         if (mHIDDeviceManager != null) {
             HIDDeviceManager.release(mHIDDeviceManager);
