@@ -503,7 +503,7 @@ int main(int argc, char** argv) {
 	}
 	if (!renderer.core) {
 		renderer.core = mCoreCreate(mPLATFORM_GBA);
-		if (!args.fname && !sAndroidRomStatus[0]) {
+		if (!args.fname && strcmp(sAndroidRomStatus, "ROM: not checked") == 0) {
 			snprintf(sAndroidRomStatus, sizeof(sAndroidRomStatus), "ROM: NONE SELECTED");
 			snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: WAITING FOR USER");
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
