@@ -69,7 +69,11 @@ static bool mSDLAndroidFrameIsBlack(const struct mSDLRenderer* renderer) {
 		const mColor* row = renderer->outputBuffer + y * renderer->outputStride;
 		for (x = 0; x < renderer->width; ++x) {
 #ifdef COLOR_16_BIT
+# ifdef COLOR_5_6_5
+			if (row[x] != 0)
+# else
 			if ((row[x] & 0x7FFF) != 0)
+# endif
 #else
 			if ((row[x] & 0x00FFFFFF) != 0)
 #endif
@@ -94,10 +98,11 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		threadStatus, videoStatus, sAndroidLastError);
 }
 
-static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* error) {
+static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* error, bool threadCrashed) {
 	if (error && error[0])
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: %.180s", error);
-	mSDLAndroidUpdateDebugOverlay(renderer, 0, true, false, false, false);
+	mSDLAndroidUpdateDebugOverlay(renderer, renderer->core && renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0,
+		mSDLAndroidFrameIsBlack(renderer), false, threadCrashed, false);
 	bool dismissed = false;
 	while (!dismissed) {
 		SDL_Event event;
@@ -625,7 +630,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	if (!mCoreLoadFile(renderer->core, args->fname)) {
 		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: FAILED");
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreLoadFile failed for selected ROM: %s", args->fname ? args->fname : "(null)");
-		mSDLAndroidShowFailure(renderer, "mCoreLoadFile failed; check ROM path and file format");
+		mSDLAndroidShowFailure(renderer, "mCoreLoadFile failed; check ROM path and file format", false);
 		return 1;
 	}
 	snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: SUCCESS");
@@ -651,7 +656,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	if (didFail) {
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: emulator thread failed to start");
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreThreadStart failed; emulator core did not start");
-		mSDLAndroidShowFailure(renderer, "mCoreThreadStart failed; emulator did not start");
+		mSDLAndroidShowFailure(renderer, "mCoreThreadStart failed; emulator did not start", false);
 	} else {
 		SDL_Log("Emulator core thread started successfully");
 	}
@@ -677,7 +682,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: emulator thread crashed");
 			printf("The game crashed!\\n");
 			mCoreThreadEnd(&thread);
-			mSDLAndroidShowFailure(renderer, "The emulation thread crashed; see the on-screen status");
+			mSDLAndroidShowFailure(renderer, "The emulation thread crashed; see the on-screen status", true);
 		}
 		mSDLResumeScreensaver(&renderer->events);
 		mSDLSetScreensaverSuspendable(&renderer->events, false);
