@@ -12,6 +12,7 @@ static JavaVM* sJavaVM;
 static jclass sManagerClass;
 static jmethodID sSendFrameMethod;
 static jmethodID sShowDialogMethod;
+static jmethodID sSyncConnectionMethod;
 
 static JNIEnv* _getEnv(bool* attached) {
     JNIEnv* env = NULL;
@@ -57,6 +58,20 @@ bool mAndroidPeerJniSendFrame(const uint8_t* frame, size_t size) {
     return sent == JNI_TRUE && !exception;
 }
 
+void mAndroidPeerJniSyncConnection(void) {
+    if (!sManagerClass || !sSyncConnectionMethod)
+        return;
+    bool attached;
+    JNIEnv* env = _getEnv(&attached);
+    if (!env)
+        return;
+    (*env)->CallStaticVoidMethod(env, sManagerClass, sSyncConnectionMethod);
+    if ((*env)->ExceptionCheck(env))
+        (*env)->ExceptionClear(env);
+    if (attached)
+        (*sJavaVM)->DetachCurrentThread(sJavaVM);
+}
+
 void mAndroidPeerJniShowDialog(void) {
     if (!sManagerClass || !sShowDialogMethod)
         return;
@@ -79,10 +94,12 @@ JNIEXPORT void JNICALL Java_org_libsdl_app_PeerLinkManager_nativeInitialize(JNIE
     sManagerClass = (jclass) (*env)->NewGlobalRef(env, cls);
     sSendFrameMethod = (*env)->GetStaticMethodID(env, sManagerClass, "sendFrame", "([B)Z");
     sShowDialogMethod = (*env)->GetStaticMethodID(env, sManagerClass, "showPairingDialog", "()V");
+    sSyncConnectionMethod = (*env)->GetStaticMethodID(env, sManagerClass, "syncNativeConnection", "()V");
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
         sSendFrameMethod = NULL;
         sShowDialogMethod = NULL;
+        sSyncConnectionMethod = NULL;
     }
 }
 
