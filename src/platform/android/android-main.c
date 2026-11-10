@@ -169,6 +169,10 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 
 			struct mPeerEvent peerEvent;
 			while (mPeerLinkPoll(sPeerLink, &peerEvent)) {
+				if (peerEvent.type == mPEER_EVENT_ERROR) {
+					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Co-op peer event queue overflowed; some messages were dropped");
+					continue;
+				}
 				if (peerEvent.type != mPEER_EVENT_MESSAGE)
 					continue;
                 if (peerEvent.messageType == mPEER_MSG_WORLD_CONFIG && !sCoopHostRole && peerEvent.size == 4 * sizeof(uint32_t)) {
