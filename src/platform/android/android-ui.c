@@ -183,39 +183,65 @@ static void _freeRoms(struct RomList* list) {
 char* mAndroidPickRom(void) {
 	JNIEnv* env = (JNIEnv*) SDL_AndroidGetJNIEnv();
 	jobject activity = SDL_AndroidGetActivity();
-	if (!env || !activity) return NULL;
-
-	jclass cls = (*env)->GetObjectClass(env, activity);
-	jmethodID openPicker = (*env)->GetMethodID(env, cls, "openRomPicker", "()V");
-	jmethodID getResult = (*env)->GetMethodID(env, cls, "getPickedRomPath", "()Ljava/lang/String;");
-	if (!openPicker || !getResult) {
-		(*env)->DeleteLocalRef(env, cls);
+	if (!env || !activity) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ROM picker unavailable: Android activity or JNI environment is missing");
 		return NULL;
 	}
+
+	jclass cls = (*env)->GetObjectClass(env, activity);
+	if (!cls) return NULL;
+	jmethodID openPicker = (*env)->GetMethodID(env, cls, "openRomPicker", "()V");
+	jmethodID getResult = (*env)->GetMethodID(env, cls, "getPickedRomPath", "()Ljava/lang/String;");
+	if ((*env)->ExceptionCheck(env) || !openPicker || !getResult) {
+		(*env)->ExceptionClear(env);
+		(*env)->DeleteLocalRef(env, cls);
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ROM picker JNI methods could not be resolved");
+		return NULL;
+	}
+
 	(*env)->CallVoidMethod(env, activity, openPicker);
+	if ((*env)->ExceptionCheck(env)) {
+		(*env)->ExceptionDescribe(env);
+		(*env)->ExceptionClear(env);
+		(*env)->DeleteLocalRef(env, cls);
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Android failed to launch the ROM document picker");
+		return NULL;
+	}
+
+	// Never leave the SDL thread polling forever if Android destroys the
+	// Activity, the picker fails to return, or its result callback is lost.
+	const Uint32 started = SDL_GetTicks();
+	const Uint32 timeoutMs = 120000;
 	char* result = NULL;
-	while (!result) {
+	bool finished = false;
+	while (!finished && (Uint32)(SDL_GetTicks() - started) < timeoutMs) {
 		SDL_Delay(100);
 		jstring value = (jstring) (*env)->CallObjectMethod(env, activity, getResult);
-		if (value) {
-			const char* utf = (*env)->GetStringUTFChars(env, value, NULL);
-			if (utf && utf[0]) {
-				if (strcmp(utf, "__CANCELLED__") == 0) {
-					(*env)->ReleaseStringUTFChars(env, value, utf);
-					(*env)->DeleteLocalRef(env, value);
-					break;
-				}
-				if (strncmp(utf, "__ERROR__:", 10) == 0) {
-					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ROM import failed: %s", utf + 10);
-					(*env)->ReleaseStringUTFChars(env, value, utf);
-					(*env)->DeleteLocalRef(env, value);
-					break;
-				}
-				result = strdup(utf);
-				(*env)->ReleaseStringUTFChars(env, value, utf);
-			}
-			(*env)->DeleteLocalRef(env, value);
+		if ((*env)->ExceptionCheck(env)) {
+			(*env)->ExceptionDescribe(env);
+			(*env)->ExceptionClear(env);
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Android ROM picker result query failed");
+			break;
 		}
+		if (!value) continue;
+
+		const char* utf = (*env)->GetStringUTFChars(env, value, NULL);
+		if (utf && utf[0]) {
+			if (strcmp(utf, "__CANCELLED__") == 0) {
+				finished = true;
+			} else if (strncmp(utf, "__ERROR__:", 10) == 0) {
+				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ROM import failed: %s", utf + 10);
+				finished = true;
+			} else {
+				result = strdup(utf);
+				finished = true;
+			}
+			(*env)->ReleaseStringUTFChars(env, value, utf);
+		}
+		(*env)->DeleteLocalRef(env, value);
+	}
+	if (!finished) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ROM picker timed out after %u ms; returning to emulator idle screen", timeoutMs);
 	}
 	(*env)->DeleteLocalRef(env, cls);
 	return result;
