@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -317,6 +318,7 @@ static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
 		if (debugTexture) SDL_DestroyTexture(debugTexture);
 		if (debugSurface) SDL_FreeSurface(debugSurface);
 		debugTexture = NULL;
+		debugUploadedGeneration = UINT64_MAX;
 		debugSurface = _makeSurface(width, debugPanelHeight);
 		debugPanelWidth = width;
 		if (debugSurface)
