@@ -695,6 +695,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 			SDL_Delay(16);
 		}
 	}
+	mAndroidOverlaySetRomLoaded(true);
 	// Reattach after loadROM: some core loaders reset their video state while
 	// initializing the cartridge, so the texture must be installed again.
 	if (renderer->outputBuffer && renderer->outputStride >= (int) renderer->width) {
