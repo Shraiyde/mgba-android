@@ -434,6 +434,15 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	out[n].label = "SELECT";
 	++n;
 
+	// Manual ROM selection remains available before a game is loaded.
+	out[n].rect.x = w / 2 - cell * 3 / 2;
+	out[n].rect.y = cell + 16;
+	out[n].rect.w = cell * 3;
+	out[n].rect.h = cell;
+	out[n].key = SDLK_F14;
+	out[n].label = "LOAD ROM";
+	++n;
+
 	// Always-visible co-op entry point, separate from the emulator buttons.
 	out[n].rect.x = w / 2 - cell;
 	out[n].rect.y = 8;
