@@ -494,15 +494,9 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			dest.x = (renderer->viewportWidth - dest.w) / 2;
 			dest.y = (renderer->viewportHeight - dest.h) / 2;
 
-			// A frame timeout is not a new black frame. Re-present the last
-			// uploaded game texture so the image remains visible between GBA
-			// frame notifications; only the touch overlay is refreshed here.
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android idle screen clear failed: %s", SDL_GetError());
-			}
-			if (renderer->sdlTex) {
-				SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, NULL, &dest);
 			}
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
 			SDL_RenderPresent(renderer->sdlRenderer);
