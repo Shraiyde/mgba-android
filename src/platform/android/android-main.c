@@ -184,7 +184,11 @@ static bool mSDLAndroidFrameIsBlack(const struct mSDLRenderer* renderer) {
 	for (y = 0; y < renderer->height; ++y) {
 		const mColor* row = renderer->outputBuffer + y * renderer->outputStride;
 		for (x = 0; x < renderer->width; ++x) {
-			if (row[x] != 0)
+#ifdef COLOR_16_BIT
+			if ((row[x] & 0x7FFF) != 0)
+#else
+			if ((row[x] & 0x00FFFFFF) != 0)
+#endif
 				return false;
 		}
 	}
