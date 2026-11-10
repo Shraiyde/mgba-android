@@ -273,7 +273,7 @@ internal static class Program
 
     private static async Task SendJson(string clientId, string type, object data)
     {
-        byte[] envelope = JsonSerializer.SerializeToUtf8Bytes(new { type, session = _session, data });
+        byte[] envelope = JsonSerializer.SerializeToUtf8Bytes(new { type, session = _session, data, auth = Hmac($"{_session}|{clientId}|{type}") });
         var message = new MqttApplicationMessageBuilder()
             .WithTopic($"{RootTopic}/down/{clientId}/control")
             .WithPayload(envelope)
