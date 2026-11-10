@@ -555,7 +555,6 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         final String errorText = "Could not import ROM: " + message;
         runOnUiThread(() -> Toast.makeText(SDLActivity.this, errorText, Toast.LENGTH_LONG).show());
     }
-    }
 
     protected void pauseNativeThread() {
         mNextNativeState = NativeState.PAUSED;
