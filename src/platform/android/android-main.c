@@ -26,10 +26,12 @@
 #define PORT "android"
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #include <string.h>
 
 static struct mStandardLogger _logger;
 static struct mPeerLink* sPeerLink;
+static pthread_mutex_t sPeerLinkPointerLock = PTHREAD_MUTEX_INITIALIZER;
 static struct mAndroidLinkCable* sLinkCable;
 
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
@@ -62,8 +64,10 @@ void mAndroidPeerLinkSetDisconnected(void) {
 }
 
 void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
+	pthread_mutex_lock(&sPeerLinkPointerLock);
 	if (sPeerLink)
 		mPeerLinkReceiveFrame(sPeerLink, frame, size);
+	pthread_mutex_unlock(&sPeerLinkPointerLock);
 }
 
 
@@ -484,10 +488,13 @@ int main(int argc, char** argv) {
 	renderer.core->setPeripheral(renderer.core, mPERIPH_RUMBLE, &renderer.player.rumble.d.d);
 #endif
 
+	pthread_mutex_lock(&sPeerLinkPointerLock);
 	sPeerLink = mPeerLinkCreate();
-	if (sPeerLink) {
-		mPeerLinkUseJavaTransport(sPeerLink, true);
-		sLinkCable = mAndroidLinkCableCreate(sPeerLink, true);
+	struct mPeerLink* peerLink = sPeerLink;
+	pthread_mutex_unlock(&sPeerLinkPointerLock);
+	if (peerLink) {
+		mPeerLinkUseJavaTransport(peerLink, true);
+		sLinkCable = mAndroidLinkCableCreate(peerLink, true);
 		// Java may have preserved an accepted peer session while SDL was paused
 		// or the Activity was recreated. Reapply that state after the native link exists.
 		mAndroidPeerJniSyncConnection();
@@ -495,6 +502,12 @@ int main(int argc, char** argv) {
 	SDL_Log("Android renderer ready; loading selected ROM: %s", args.fname);
 	int ret = mSDLRun(&renderer, &args);
 	mAndroidOverlaySetWindow(NULL);
+	pthread_mutex_lock(&sPeerLinkPointerLock);
+	struct mPeerLink* peerLinkToDestroy = sPeerLink;
+	sPeerLink = NULL;
+	pthread_mutex_unlock(&sPeerLinkPointerLock);
+	if (peerLinkToDestroy)
+		mPeerLinkDestroy(peerLinkToDestroy);
 	mSDLDetachPlayer(&renderer.events, &renderer.player);
 	mInputMapDeinit(&renderer.core->inputMap);
 
