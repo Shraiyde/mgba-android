@@ -5,7 +5,8 @@ on:
   push:
     branches: [master]
     paths:
-      - 'src/platform/android/**'
+      - 'src/**'
+      - 'include/**'
       - 'src/core/**'
       - 'src/gba/**'
       - 'src/gb/**'
@@ -13,6 +14,10 @@ on:
       - 'CMakeLists.txt'
       - 'version.cmake'
       - '.github/workflows/build-android-apk.yml'
+
+concurrency:
+  group: android-apk-build
+  cancel-in-progress: true
 
 permissions:
   contents: write
