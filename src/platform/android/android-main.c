@@ -661,18 +661,15 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		mSDLSuspendScreensaver(&renderer->events);
 		renderer->audioInitialized = mSDLInitAudio(&renderer->audio, &thread);
 		if (!renderer->audioInitialized) {
-			// Keep the emulator running if Android exposes no audio device, but
-			// surface the failure. Audio/video synchronization remains enabled
-			// in the core options and is only bypassed for this unavailable device.
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: audio init failed: %.130s", SDL_GetError());
-			printf("Audio unavailable; continuing with video only: %s\n", SDL_GetError());
-			MutexLock(&thread.impl->sync.audioBufferMutex);
-			thread.impl->sync.audioWait = false;
-			MutexUnlock(&thread.impl->sync.audioBufferMutex);
+			SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Audio initialization failed; keeping audio synchronization enabled: %s", SDL_GetError());
+			mCoreThreadEnd(&thread);
+			didFail = true;
+			mSDLAndroidShowFailure(renderer, "Audio initialization failed; audio synchronization remains enabled");
 		} else {
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
+			renderer->runloop(renderer, &thread);
 		}
-		renderer->runloop(renderer, &thread);
 		if (renderer->audioInitialized)
 			mSDLPauseAudio(&renderer->audio);
 		if (mCoreThreadHasCrashed(&thread)) {
