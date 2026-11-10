@@ -107,7 +107,8 @@ create_game_texture:
 		renderer->window = NULL;
 		return false;
 	}
-	renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, stride / BYTES_PER_PIXEL);
+	renderer->outputStride = stride / BYTES_PER_PIXEL;
+	renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
 
 	return true;
 }
