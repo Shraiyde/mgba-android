@@ -621,6 +621,9 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	// No ROM is a normal startup state. Keep SDL, the renderer, touch controls,
 	// and peer-link UI alive while the user chooses a game with the on-screen
 	// LOAD ROM control. A cancelled picker simply returns to this idle screen.
+	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus,
+		"FRAMES: no game loaded", "EMULATION THREAD: waiting",
+		"VIDEO: renderer ready", sAndroidLastError);
 	while (!args->fname) {
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
