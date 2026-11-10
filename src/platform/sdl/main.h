@@ -31,6 +31,7 @@ struct mCore;
 struct mSDLRenderer {
 	struct mCore* core;
 	mColor* outputBuffer;
+	int outputStride;
 
 	struct mSDLAudio audio;
 	struct mSDLEvents events;
