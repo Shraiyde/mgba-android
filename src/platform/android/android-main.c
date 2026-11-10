@@ -25,6 +25,7 @@
 
 #define PORT "android"
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 static struct mStandardLogger _logger;
@@ -48,29 +49,16 @@ static uint32_t sCoopLastSioActive = UINT32_MAX;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static bool sCoopHostRole;
+static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
+static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
 
 void mAndroidPeerLinkSetConnected(bool host) {
-	sCoopLastMapSent = UINT32_MAX;
-	sCoopLastSioActive = UINT32_MAX;
-	sCoopLastConfigFrame = UINT32_MAX;
-	sCoopLastConfigSequence = UINT32_MAX;
-	sCoopHostRole = host;
-	if (sPeerLink) {
-		mPeerLinkSetHostRole(sPeerLink, host);
-		mPeerLinkSetConnected(sPeerLink, true);
-	}
-	if (sLinkCable)
-		mAndroidLinkCableSetRole(sLinkCable, host);
+	atomic_store(&sPendingPeerHostRole, host);
+	atomic_store(&sPendingPeerState, 1);
 }
 
 void mAndroidPeerLinkSetDisconnected(void) {
-	sCoopLastMapSent = UINT32_MAX;
-	sCoopLastSioActive = UINT32_MAX;
-	sCoopLastConfigFrame = UINT32_MAX;
-	sCoopLastConfigSequence = UINT32_MAX;
-	sCoopHostRole = false;
-	if (sPeerLink)
-		mPeerLinkSetConnected(sPeerLink, false);
+	atomic_store(&sPendingPeerState, 0);
 }
 
 void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
@@ -239,6 +227,25 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	}
 }
 
+static void mSDLAndroidApplyPendingPeerState(void) {
+	int state = atomic_exchange(&sPendingPeerState, -1);
+	if (state < 0)
+		return;
+	bool connected = state == 1;
+	bool host = atomic_load(&sPendingPeerHostRole);
+	sCoopLastMapSent = UINT32_MAX;
+	sCoopLastSioActive = UINT32_MAX;
+	sCoopLastConfigFrame = UINT32_MAX;
+	sCoopLastConfigSequence = UINT32_MAX;
+	sCoopHostRole = connected && host;
+	if (sPeerLink) {
+		mPeerLinkSetHostRole(sPeerLink, host);
+		mPeerLinkSetConnected(sPeerLink, connected);
+	}
+	if (connected && sLinkCable)
+		mAndroidLinkCableSetRole(sLinkCable, host);
+}
+
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	struct mCoreThread* context = user;
 	SDL_Event event;
@@ -266,6 +273,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 		if (!mCoreSyncWaitFrameStart(&context->impl->sync)) {
 			// The core is waiting on this sync lock; apply mailbox reads/writes here
 			// so the game bus is never accessed concurrently with CPU execution.
+			mSDLAndroidApplyPendingPeerState();
 			mSDLAndroidUpdateCoopMailbox(renderer->core);
 			// Keep the Android controls visible even before the GBA core has
 			// produced its first frame (or while video sync is waiting).
@@ -331,6 +339,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			}
 			renderer->outputStride = stride / BYTES_PER_PIXEL;
 			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
+			mSDLAndroidApplyPendingPeerState();
 			mSDLAndroidUpdateCoopMailbox(renderer->core);
 		}
 		mCoreSyncWaitFrameEnd(&context->impl->sync);
