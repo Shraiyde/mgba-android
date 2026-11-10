@@ -441,14 +441,24 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     public void openRomPicker() {
         pickedRomPath = null;
         runOnUiThread(() -> {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("*/*");
-            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
-                "application/octet-stream", "application/x-gba-rom", "application/zip"
-            });
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            startActivityForResult(intent, ROM_PICKER_REQUEST);
+            if (isFinishing() || (Build.VERSION.SDK_INT >= 17 && isDestroyed())) {
+                pickedRomPath = "__CANCELLED__";
+                return;
+            }
+            try {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+                    "application/octet-stream", "application/x-gba-rom", "application/zip"
+                });
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                startActivityForResult(intent, ROM_PICKER_REQUEST);
+            } catch (Exception error) {
+                Log.e(TAG, "Could not launch ROM document picker", error);
+                pickedRomPath = "__ERROR__:Could not open Android file picker";
+                Toast.makeText(SDLActivity.this, "Could not open Android file picker", Toast.LENGTH_LONG).show();
+            }
         });
     }
 
@@ -669,6 +679,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     protected void onDestroy() {
         Log.v(TAG, "onDestroy()");
+        // Wake a native ROM-picker wait if Android tears down this Activity
+        // before ACTION_OPEN_DOCUMENT returns a result.
+        if (pickedRomPath == null) {
+            pickedRomPath = "__CANCELLED__";
+        }
 
         if (mHIDDeviceManager != null) {
             HIDDeviceManager.release(mHIDDeviceManager);
