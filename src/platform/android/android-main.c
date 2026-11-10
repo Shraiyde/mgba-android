@@ -28,6 +28,8 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdio.h>
+#include <sys/stat.h>
 #include <sys/stat.h>
 
 static struct mStandardLogger _logger;
@@ -54,6 +56,122 @@ static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static bool sCoopHostRole;
 static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
 static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
+
+struct AndroidDebugStatus {
+ bool romFound;
+ unsigned long long romSize;
+ int loadResult;
+ bool frameBlack;
+ bool frameBlackKnown;
+ bool videoBufferAttached;
+ bool frameCopySucceeded;
+ char lastError[160];
+};
+static struct AndroidDebugStatus sAndroidDebug = { .loadResult = -1 };
+static const char sDebugGlyphChars[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:./-?()";
+static const uint8_t sDebugGlyphs[][7] = {
+ {0,0,0,0,0,0,0},
+ {14,17,17,31,17,17,17},{30,17,17,30,17,17,30},{14,17,16,16,16,17,14},{30,17,17,17,17,17,30},
+ {31,16,16,30,16,16,31},{31,16,16,30,16,16,16},{14,17,16,23,17,17,15},{17,17,17,31,17,17,17},
+ {14,4,4,4,4,4,14},{7,2,2,2,18,18,12},{17,18,20,24,20,18,17},{16,16,16,16,16,16,31},
+ {17,27,21,21,17,17,17},{17,25,21,19,17,17,17},{14,17,17,17,17,17,14},{30,17,17,30,16,16,16},
+ {14,17,17,17,21,18,13},{30,17,17,30,20,18,17},{15,16,16,14,1,1,30},{31,4,4,4,4,4,4},
+ {17,17,17,17,17,17,14},{17,17,17,17,17,10,4},{17,17,17,21,21,21,10},{17,17,10,4,10,17,17},
+ {17,17,10,4,4,4,4},{31,1,2,4,8,16,31},
+ {14,17,19,21,25,17,14},{4,12,4,4,4,4,14},{14,17,1,2,4,8,31},{30,1,1,14,1,1,30},
+ {2,6,10,18,31,2,2},{31,16,16,30,1,1,30},{14,16,16,30,17,17,14},{31,1,2,4,8,8,8},
+ {14,17,17,14,17,17,14},{14,17,17,15,1,1,14},
+ {0,4,4,0,4,4,0},{0,0,0,0,0,4,4},{1,2,4,8,16,0,0},{0,0,0,31,0,0,0},
+ {14,17,1,2,4,0,4},{14,17,1,6,4,0,4},{0,10,0,0,0,10,0}
+};
+static void mSDLAndroidSetError(const char* message) {
+ if (!message || !*message) message = "UNKNOWN ERROR";
+ snprintf(sAndroidDebug.lastError, sizeof(sAndroidDebug.lastError), "%s", message);
+ SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Android emulator: %s", message);
+}
+static void mSDLAndroidDrawText(SDL_Renderer* renderer, int x, int y, int scale, const char* text) {
+ for (; text && *text; ++text, x += 6 * scale) {
+  char ch = *text;
+  if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 'a' + 'A');
+  const char* found = strchr(sDebugGlyphChars, ch);
+  unsigned index = found ? (unsigned)(found - sDebugGlyphChars) : (unsigned)(strchr(sDebugGlyphChars, '?') - sDebugGlyphChars);
+  for (int row = 0; row < 7; ++row) for (int col = 0; col < 5; ++col) {
+   if (!(sDebugGlyphs[index][row] & (1U << (4 - col)))) continue;
+   SDL_Rect pixel = { x + col * scale, y + row * scale, scale, scale };
+   SDL_RenderFillRect(renderer, &pixel);
+  }
+ }
+}
+static bool mSDLAndroidFrameIsBlack(struct mSDLRenderer* renderer) {
+#if defined(COLOR_16_BIT)
+# if defined(COLOR_5_6_5)
+ SDL_PixelFormat* format = SDL_AllocFormat(SDL_PIXELFORMAT_RGB565);
+# else
+ SDL_PixelFormat* format = SDL_AllocFormat(SDL_PIXELFORMAT_ABGR1555);
+# endif
+#else
+ SDL_PixelFormat* format = SDL_AllocFormat(SDL_PIXELFORMAT_ABGR8888);
+#endif
+ if (!format || !renderer->outputBuffer || renderer->outputStride < (int)renderer->width) {
+  if (format) SDL_FreeFormat(format);
+  return false;
+ }
+ bool black = true;
+ for (unsigned y = 0; y < renderer->height && black; ++y) for (unsigned x = 0; x < renderer->width; ++x) {
+  Uint8 red, green, blue;
+  Uint32 pixel = (Uint32)renderer->outputBuffer[(size_t)y * renderer->outputStride + x];
+  SDL_GetRGB(pixel, format, &red, &green, &blue);
+  if (red || green || blue) { black = false; break; }
+ }
+ SDL_FreeFormat(format);
+ return black;
+}
+static void mSDLAndroidDrawDebugOverlay(struct mSDLRenderer* renderer) {
+ char lines[7][180];
+ const char* load = sAndroidDebug.loadResult < 0 ? "PENDING" : (sAndroidDebug.loadResult ? "SUCCESS" : "FAILED");
+ const char* pixels = !sAndroidDebug.frameBlackKnown ? "WAITING" : (sAndroidDebug.frameBlack ? "ENTIRELY BLACK" : "HAS IMAGE");
+ unsigned frame = renderer->core && renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0;
+ const char* thread = frame ? "RUNNING" : "STARTING / IDLE";
+ snprintf(lines[0], sizeof(lines[0]), "ROM: %s SIZE: %llu BYTES", sAndroidDebug.romFound ? "FOUND" : "MISSING", sAndroidDebug.romSize);
+ snprintf(lines[1], sizeof(lines[1]), "M G B A LOAD: %s", load);
+ snprintf(lines[2], sizeof(lines[2]), "FRAME COUNT: %u", frame);
+ snprintf(lines[3], sizeof(lines[3]), "LATEST FRAME: %s", pixels);
+ snprintf(lines[4], sizeof(lines[4]), "THREAD: %s VIDEO: %s", thread, sAndroidDebug.videoBufferAttached ? "ATTACHED" : "DETACHED");
+ snprintf(lines[5], sizeof(lines[5]), "SDL COPY: %s", sAndroidDebug.frameCopySucceeded ? "OK" : "NOT YET / FAILED");
+ snprintf(lines[6], sizeof(lines[6]), "ERROR: %s", sAndroidDebug.lastError[0] ? sAndroidDebug.lastError : "NONE");
+ int scale = renderer->viewportWidth >= 900 ? 2 : 1;
+ int x = 10, y = 10;
+ int maxChars = (renderer->viewportWidth - 24) / (6 * scale);
+ if (maxChars < 8) return;
+ int panelWidth = maxChars * 6 * scale + 12;
+ if (panelWidth > renderer->viewportWidth - 12) panelWidth = renderer->viewportWidth - 12;
+ SDL_Rect panel = { x, y, panelWidth, 7 * (9 * scale) + 12 };
+ SDL_SetRenderDrawBlendMode(renderer->sdlRenderer, SDL_BLENDMODE_BLEND);
+ SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 210);
+ SDL_RenderFillRect(renderer->sdlRenderer, &panel);
+ SDL_SetRenderDrawColor(renderer->sdlRenderer, 255, 255, 255, 255);
+ for (int i = 0; i < 7; ++i) {
+  lines[i][maxChars < (int)sizeof(lines[i]) - 1 ? maxChars : sizeof(lines[i]) - 1] = '\0';
+  mSDLAndroidDrawText(renderer->sdlRenderer, x + 6, y + 6 + i * 9 * scale, scale, lines[i]);
+ }
+ SDL_SetRenderDrawBlendMode(renderer->sdlRenderer, SDL_BLENDMODE_NONE);
+}
+static void mSDLAndroidWaitForDismiss(struct mSDLRenderer* renderer) {
+ bool done = false;
+ while (!done) {
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+   mAndroidOverlayHandleEvent(&event);
+   if (event.type == SDL_QUIT || event.type == SDL_KEYDOWN || event.type == SDL_FINGERDOWN) done = true;
+  }
+  SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
+  SDL_RenderClear(renderer->sdlRenderer);
+  mAndroidOverlayDraw(renderer->sdlRenderer, NULL);
+  mSDLAndroidDrawDebugOverlay(renderer);
+  SDL_RenderPresent(renderer->sdlRenderer);
+  SDL_Delay(16);
+ }
+}
 
 static char sAndroidRomStatus[192] = "ROM: not checked";
 static char sAndroidLoadStatus[96] = "LOAD: not attempted";
@@ -359,6 +477,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android idle screen clear failed: %s", SDL_GetError());
 			}
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
+			mSDLAndroidDrawDebugOverlay(renderer);
 			SDL_RenderPresent(renderer->sdlRenderer);
 			SDL_Delay(16);
 			continue;
@@ -366,6 +485,9 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 
 		{
 			latestFrameBlack = mSDLAndroidFrameIsBlack(renderer);
+			sAndroidDebug.frameBlack = mSDLAndroidFrameIsBlack(renderer);
+			sAndroidDebug.frameBlackKnown = true;
+			sAndroidDebug.frameCopySucceeded = false;
 			SDL_UnlockTexture(renderer->sdlTex);
 
 			SDL_Rect dest;
@@ -383,6 +505,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android frame clear failed: %s", SDL_GetError());
 			}
 			bool frameCopied = SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, 0, &dest) == 0;
+			sAndroidDebug.frameCopySucceeded = frameCopied;
 			lastFramePresented = frameCopied;
 			if (!frameCopied) {
 				snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL_RenderCopy: %.150s", SDL_GetError());
@@ -624,6 +747,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	bool didFail = !mCoreThreadStart(&thread);
 	if (didFail) {
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: emulator thread failed to start");
+		mSDLAndroidSetError("EMULATOR THREAD FAILED TO START");
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mCoreThreadStart failed; emulator core did not start");
 		mSDLAndroidShowFailure(renderer, "mCoreThreadStart failed; emulator did not start");
 	} else {
@@ -651,6 +775,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 			mSDLPauseAudio(&renderer->audio);
 		if (mCoreThreadHasCrashed(&thread)) {
 			didFail = true;
+			mSDLAndroidSetError("EMULATOR THREAD CRASHED");
 			printf("The game crashed!\\n");
 			mCoreThreadEnd(&thread);
 		}
