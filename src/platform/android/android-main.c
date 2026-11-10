@@ -202,13 +202,25 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	uint32_t frame = core->frameCounter ? core->frameCounter(core) : 0;
 	if (!sCoopMailboxAddress && frame >= sCoopMailboxNextScan) {
 		sCoopMailboxNextScan = frame + 30;
-		uint32_t address;
-		for (address = GBA_EWRAM_START; address + HNS_COOP_MAILBOX_SIZE <= GBA_EWRAM_END; address += 4) {
-			if (core->busRead32(core, address) == HNS_COOP_MAILBOX_MAGIC
-				&& core->busRead16(core, address + 4) == HNS_COOP_MAILBOX_VERSION
-				&& core->busRead16(core, address + 6) == HNS_COOP_MAILBOX_SIZE) {
-				sCoopMailboxAddress = address;
-				break;
+		/*
+		 * The renderer calls this at a frame boundary while the emulation
+		 * thread is waiting for frame acknowledgement. Do not perform tens of
+		 * thousands of emulated bus transactions here: scan the backing EWRAM
+		 * directly. GBA memory is quiescent at this point because the core is
+		 * blocked in mCoreSyncPostFrame.
+		 */
+		struct GBA* gba = (struct GBA*) core->board;
+		const uint32_t* ewram = gba ? gba->memory.wram : NULL;
+		if (ewram) {
+			const size_t lastWord = (GBA_EWRAM_END - GBA_EWRAM_START - HNS_COOP_MAILBOX_SIZE) / sizeof(uint32_t);
+			size_t word;
+			for (word = 0; word <= lastWord; ++word) {
+				if (ewram[word] == HNS_COOP_MAILBOX_MAGIC
+					&& ((const uint16_t*) &ewram[word])[2] == HNS_COOP_MAILBOX_VERSION
+					&& ((const uint16_t*) &ewram[word])[3] == HNS_COOP_MAILBOX_SIZE) {
+					sCoopMailboxAddress = GBA_EWRAM_START + (uint32_t) (word * sizeof(uint32_t));
+					break;
+				}
 			}
 		}
 	}
