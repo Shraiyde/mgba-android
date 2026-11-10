@@ -252,6 +252,57 @@ static struct {
 	int height;
 } overlayCache;
 
+ 
+#define DEBUG_LINE_COUNT 6
+static char debugLines[DEBUG_LINE_COUNT][192];
+static SDL_Surface* debugSurface;
+static SDL_Texture* debugTexture;
+static int debugPanelWidth;
+static const int debugPanelHeight = 92;
+
+void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char* frames, const char* thread, const char* video, const char* error) {
+	const char* values[DEBUG_LINE_COUNT] = { rom, load, frames, thread, video, error };
+	int i;
+	for (i = 0; i < DEBUG_LINE_COUNT; ++i)
+		snprintf(debugLines[i], sizeof(debugLines[i]), "%s", values[i] ? values[i] : "");
+}
+
+static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
+	int width = windowWidth - 16;
+	if (width > 760) width = 760;
+	if (width < 160) return;
+	if (!debugSurface || debugPanelWidth != width) {
+		if (debugTexture) SDL_DestroyTexture(debugTexture);
+		if (debugSurface) SDL_FreeSurface(debugSurface);
+		debugTexture = NULL;
+		debugSurface = _makeSurface(width, debugPanelHeight);
+		debugPanelWidth = width;
+		if (debugSurface)
+			debugTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, debugPanelHeight);
+		if (!debugSurface || !debugTexture) {
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay allocation failed: %s", SDL_GetError());
+			if (debugTexture) SDL_DestroyTexture(debugTexture);
+			if (debugSurface) SDL_FreeSurface(debugSurface);
+			debugTexture = NULL;
+			debugSurface = NULL;
+			return;
+		}
+		SDL_SetTextureBlendMode(debugTexture, SDL_BLENDMODE_BLEND);
+	}
+	Uint32 background = SDL_MapRGBA(debugSurface->format, 0, 0, 0, 220);
+	Uint32 foreground = SDL_MapRGBA(debugSurface->format, 255, 255, 255, 255);
+	SDL_FillRect(debugSurface, NULL, background);
+	int i;
+	for (i = 0; i < DEBUG_LINE_COUNT; ++i)
+		_blitText(debugSurface, debugLines[i], 6, 4 + i * 14, 1, foreground);
+	if (SDL_UpdateTexture(debugTexture, NULL, debugSurface->pixels, debugSurface->pitch) < 0) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay update failed: %s", SDL_GetError());
+		return;
+	}
+	SDL_Rect panel = { 8, 8, width, debugPanelHeight };
+	SDL_RenderCopy(renderer, debugTexture, NULL, &panel);
+}
+
 static void _freeOverlayCache(void) {
 	if (overlayCache.texture) {
 		SDL_DestroyTexture(overlayCache.texture);
@@ -538,6 +589,9 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	SDL_RenderFillRect(renderer, toggle);
 
 	if (overlay.hidden) {
+		int w, h;
+		SDL_GetWindowSize(overlay.window, &w, &h);
+		_drawDebugStatus(renderer, w);
 		return;
 	}
 	if (view) {
@@ -595,4 +649,5 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	if (SDL_RenderCopy(renderer, overlayCache.texture, NULL, NULL) < 0) {
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay draw failed: %s", SDL_GetError());
 	}
+	_drawDebugStatus(renderer, w);
 }
