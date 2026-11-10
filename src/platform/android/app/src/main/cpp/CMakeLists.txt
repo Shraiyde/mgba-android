@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
 project(mgba-android LANGUAGES C CXX)
 
+# The CI produces an installable debug APK, but Android Gradle otherwise
+# compiles its native targets with Debug's unoptimized -O0 defaults. mGBA's
+# CPU/video/audio hot paths are too expensive at -O0 on a phone. Keep debug
+# symbols and assertions, but optimize native code in every APK variant.
+add_compile_options(-O2)
+
 set(MGBA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../..)
 set(SDL2_SRC "" CACHE PATH "Path to the SDL2 source tree")
 
