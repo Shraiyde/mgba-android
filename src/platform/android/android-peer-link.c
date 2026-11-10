@@ -240,7 +240,7 @@ static bool _authenticate(struct mPeerLink* link, int fd) {
 static void* _peerThread(void* opaque) {
 	struct mPeerLink* link = opaque;
 	int fd = -1;
-	if (link->host) {
+	if (atomic_load(&link->host)) {
 		link->listenFd = _createListener(link->port);
 		if (link->listenFd < 0) {
 			_queueEvent(link, mPEER_EVENT_ERROR, 0, NULL, 0, errno);
