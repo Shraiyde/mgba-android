@@ -9,6 +9,11 @@ set(LIBMGBA_ONLY ON)
 set(DISABLE_DEPS OFF CACHE BOOL "" FORCE)
 set(USE_ZLIB ON CACHE BOOL "" FORCE)
 add_subdirectory(${MGBA_ROOT} mgba)
+if(ANDROID)
+	# Android's 64-bit off_t is already supported by fopen/ftello/fseeko.
+	# Force minizip's portable stdio path instead of unavailable *64 symbols.
+	target_compile_definitions(mgba PRIVATE IOAPI_NO_64)
+endif()
 
 if(NOT SDL2_SRC)
 	message(FATAL_ERROR "Pass -DSDL2_SRC=/path/to/SDL2 (see build-apk.sh)")
