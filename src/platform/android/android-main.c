@@ -701,6 +701,9 @@ int main(int argc, char** argv) {
 	mArgumentsApply(&args, &subparser, 1, &renderer.core->config);
 
 	mCoreConfigSetDefaultIntValue(&renderer.core->config, "logToStdout", true);
+	// Run GBA scanline rendering on mGBA's worker thread so the ARM emulation
+	// thread can execute concurrently on multi-core Android devices.
+	mCoreConfigSetDefaultValue(&renderer.core->config, "threadedVideo", "1");
 	mCoreConfigLoadDefaults(&renderer.core->config, &opts);
 	mCoreLoadConfig(renderer.core);
 	mStandardLoggerInit(&_logger);
