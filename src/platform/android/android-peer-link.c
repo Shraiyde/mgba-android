@@ -22,7 +22,7 @@
 
 #define PEER_MAGIC 0x4D504C4BU
 #define PEER_VERSION 1
-#define PEER_QUEUE_CAPACITY 32
+#define PEER_QUEUE_CAPACITY 64
 #define PEER_AUTH 1
 #define PEER_AUTH_RESULT 2
 
@@ -45,7 +45,7 @@ struct mPeerLink {
 	atomic_bool remoteSioActive;
 	int socketFd;
 	int listenFd;
-	bool host;
+	atomic_bool host;
 	char* address;
 	uint16_t port;
 	bool threadStarted;
@@ -61,6 +61,7 @@ struct mPeerLink {
 	size_t queueRead;
 	size_t queueWrite;
 	size_t queueCount;
+	bool queueOverflow;
 };
 
 static bool _validPin(const char* pin) {
@@ -135,6 +136,9 @@ static void _queueEvent(struct mPeerLink* link, enum mPeerEventType type, uint16
 		if (data && size) memcpy(event->data, data, size);
 		link->queueWrite = (link->queueWrite + 1) % PEER_QUEUE_CAPACITY;
 		++link->queueCount;
+	} else {
+		// Surface queue loss to the emulator thread instead of silently dropping it.
+		link->queueOverflow = true;
 	}
 	pthread_mutex_unlock(&link->lock);
 }
@@ -222,7 +226,7 @@ static bool _authenticate(struct mPeerLink* link, int fd) {
 	uint16_t type = 0;
 	uint32_t size = 0;
 	uint8_t payload[MPEER_MAX_PAYLOAD];
-	if (link->host) {
+	if (atomic_load(&link->host)) {
 		if (!_receiveFrame(fd, &type, payload, &size) || type != PEER_AUTH || size != MPEER_PIN_LENGTH) return false;
 		uint8_t accepted = memcmp(payload, link->pin, MPEER_PIN_LENGTH) == 0 ? 1 : 0;
 		if (!_sendFrame(link, fd, PEER_AUTH_RESULT, &accepted, 1)) return false;
@@ -298,6 +302,7 @@ struct mPeerLink* mPeerLinkCreate(void) {
 	atomic_init(&link->connected, false);
 	atomic_init(&link->localSioActive, false);
 	atomic_init(&link->remoteSioActive, false);
+	atomic_init(&link->host, false);
 	link->socketFd = -1;
 	link->listenFd = -1;
 	return link;
@@ -305,7 +310,7 @@ struct mPeerLink* mPeerLinkCreate(void) {
 
 bool mPeerLinkHost(struct mPeerLink* link, uint16_t port, const char* pin) {
 	if (!link || atomic_load(&link->running) || !_validPin(pin)) return false;
-	link->host = true;
+	atomic_store(&link->host, true);
 	link->port = port ? port : MPEER_DEFAULT_PORT;
 	memcpy(link->pin, pin, MPEER_PIN_LENGTH + 1);
 	link->sioQueueRead = 0;
@@ -324,7 +329,7 @@ bool mPeerLinkHost(struct mPeerLink* link, uint16_t port, const char* pin) {
 
 bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, const char* pin) {
 	if (!link || !address || !address[0] || atomic_load(&link->running) || !_validPin(pin)) return false;
-	link->host = false;
+	atomic_store(&link->host, false);
 	link->port = port ? port : MPEER_DEFAULT_PORT;
 	link->address = strdup(address);
 	if (!link->address) return false;
@@ -374,6 +379,14 @@ bool mPeerLinkSend(struct mPeerLink* link, uint16_t type, const void* data, uint
 bool mPeerLinkPoll(struct mPeerLink* link, struct mPeerEvent* event) {
 	if (!link || !event) return false;
 	pthread_mutex_lock(&link->lock);
+	if (link->queueOverflow) {
+		memset(event, 0, sizeof(*event));
+		event->type = mPEER_EVENT_ERROR;
+		event->error = ENOBUFS;
+		link->queueOverflow = false;
+		pthread_mutex_unlock(&link->lock);
+		return true;
+	}
 	if (!link->queueCount) {
 		pthread_mutex_unlock(&link->lock);
 		return false;
@@ -469,6 +482,7 @@ void mPeerLinkSetConnected(struct mPeerLink* link, bool connected) {
 		link->queueRead = 0;
 		link->queueWrite = 0;
 		link->queueCount = 0;
+		link->queueOverflow = false;
 		pthread_cond_broadcast(&link->sioCond);
 	}
 	pthread_mutex_unlock(&link->lock);
@@ -497,7 +511,7 @@ void mPeerLinkSetLocalSioActive(struct mPeerLink* link, bool active) {
 
 void mPeerLinkSetHostRole(struct mPeerLink* link, bool host) {
 	if (link)
-		link->host = host;
+		atomic_store(&link->host, host);
 }
 
 bool mPeerLinkReceiveFrame(struct mPeerLink* link, const uint8_t* frame, size_t size) {
