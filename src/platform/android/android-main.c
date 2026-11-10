@@ -55,6 +55,56 @@ static bool sCoopHostRole;
 static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
 static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
 
+static char sAndroidRomStatus[192] = "ROM: not checked";
+static char sAndroidLoadStatus[96] = "LOAD: not attempted";
+static char sAndroidLastError[192] = "ERROR: none";
+
+static bool mSDLAndroidFrameIsBlack(const struct mSDLRenderer* renderer) {
+	if (!renderer || !renderer->outputBuffer || renderer->outputStride < (int) renderer->width)
+		return true;
+	unsigned y, x;
+	for (y = 0; y < renderer->height; ++y) {
+		const mColor* row = renderer->outputBuffer + y * renderer->outputStride;
+		for (x = 0; x < renderer->width; ++x) {
+			if (row[x] != 0)
+				return false;
+		}
+	}
+	return true;
+}
+
+static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigned frames, bool frameBlack, bool threadActive, bool threadCrashed, bool presented) {
+	char frameStatus[192];
+	char threadStatus[96];
+	char videoStatus[192];
+	snprintf(frameStatus, sizeof(frameStatus), "FRAMES: %u | LATEST FRAME ALL BLACK: %s",
+		frames, frames ? (frameBlack ? "YES" : "NO") : "WAITING");
+	snprintf(threadStatus, sizeof(threadStatus), "EMULATION THREAD: %s",
+		threadCrashed ? "CRASHED" : (threadActive ? "RUNNING" : "STOPPED"));
+	snprintf(videoStatus, sizeof(videoStatus), "VIDEO: CORE BUFFER %s | SDL PRESENTED %s",
+		renderer && renderer->videoBufferAttached ? "ATTACHED" : "NOT ATTACHED",
+		presented ? "YES" : "NO");
+	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, frameStatus,
+		threadStatus, videoStatus, sAndroidLastError);
+}
+
+static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* error) {
+	if (error && error[0])
+		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: %.180s", error);
+	mSDLAndroidUpdateDebugOverlay(renderer, 0, true, false, false, false);
+	Uint32 until = SDL_GetTicks() + 7000;
+	while ((Sint32)(until - SDL_GetTicks()) > 0) {
+		SDL_Event event;
+		while (SDL_PollEvent(&event))
+			mAndroidOverlayHandleEvent(&event);
+		SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
+		SDL_RenderClear(renderer->sdlRenderer);
+		mAndroidOverlayDraw(renderer->sdlRenderer, NULL);
+		SDL_RenderPresent(renderer->sdlRenderer);
+		SDL_Delay(16);
+	}
+}
+
 void mAndroidPeerLinkSetConnected(bool host) {
 	atomic_store(&sPendingPeerHostRole, host);
 	atomic_store(&sPendingPeerState, 1);
@@ -261,18 +311,22 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	bool firstFrameLogged = false;
 	bool renderCopyErrorLogged = false;
 	Uint32 lastDiagnostics = SDL_GetTicks();
+	bool latestFrameBlack = true;
+	bool lastFramePresented = false;
 
 	SDL_Log("Android video loop entered: window=%p renderer=%p texture=%p size=%ux%u output=%p",
 		renderer->window, renderer->sdlRenderer, renderer->sdlTex, renderer->width, renderer->height, renderer->outputBuffer);
 	while (mCoreThreadIsActive(context)) {
 		Uint32 now = SDL_GetTicks();
-		if ((Uint32)(now - lastDiagnostics) >= 2000) {
+		if ((Uint32)(now - lastDiagnostics) >= 500) {
 			lastDiagnostics = now;
-			SDL_Log("Android emulator heartbeat: frame=%u active=%d crashed=%d output=%p sample0=%u sampleCenter=%u",
-				renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0,
-				mCoreThreadIsActive(context), mCoreThreadHasCrashed(context), renderer->outputBuffer,
-				renderer->outputBuffer ? (unsigned) renderer->outputBuffer[0] : 0,
-				renderer->outputBuffer ? (unsigned) renderer->outputBuffer[(renderer->height / 2) * renderer->outputStride + (renderer->width / 2)] : 0);
+			unsigned frames = renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0;
+			bool active = mCoreThreadIsActive(context);
+			bool crashed = mCoreThreadHasCrashed(context);
+			mSDLAndroidUpdateDebugOverlay(renderer, frames, latestFrameBlack, active, crashed, lastFramePresented);
+			SDL_Log("Android emulator heartbeat: frame=%u active=%d crashed=%d buffer=%p attached=%d presented=%d black=%d",
+				frames, active, crashed, renderer->outputBuffer, renderer->videoBufferAttached,
+				lastFramePresented, latestFrameBlack);
 		}
 		while (SDL_PollEvent(&event)) {
 			mAndroidOverlayHandleEvent(&event);
@@ -311,6 +365,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 		}
 
 		{
+			latestFrameBlack = mSDLAndroidFrameIsBlack(renderer);
 			SDL_UnlockTexture(renderer->sdlTex);
 
 			SDL_Rect dest;
@@ -328,9 +383,13 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android frame clear failed: %s", SDL_GetError());
 			}
 			bool frameCopied = SDL_RenderCopy(renderer->sdlRenderer, renderer->sdlTex, 0, &dest) == 0;
-			if (!frameCopied && !renderCopyErrorLogged) {
-				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android game frame copy failed: %s", SDL_GetError());
-				renderCopyErrorLogged = true;
+			lastFramePresented = frameCopied;
+			if (!frameCopied) {
+				snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL_RenderCopy: %.150s", SDL_GetError());
+				if (!renderCopyErrorLogged) {
+					SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android game frame copy failed: %s", SDL_GetError());
+					renderCopyErrorLogged = true;
+				}
 			}
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
 			SDL_RenderPresent(renderer->sdlRenderer);
@@ -341,6 +400,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 
 			int stride = 0;
 			if (SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride) < 0 || !renderer->outputBuffer) {
+				snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL_LockTexture: %.150s", SDL_GetError());
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android game texture relock failed: %s", SDL_GetError());
 				mCoreThreadEnd(context);
 				mCoreSyncWaitFrameEnd(&context->impl->sync);
