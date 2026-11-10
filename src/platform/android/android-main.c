@@ -502,13 +502,13 @@ int main(int argc, char** argv) {
 	SDL_Log("Android renderer ready; loading selected ROM: %s", args.fname);
 	int ret = mSDLRun(&renderer, &args);
 	mAndroidOverlaySetWindow(NULL);
+	mSDLDetachPlayer(&renderer.events, &renderer.player);
 	pthread_mutex_lock(&sPeerLinkPointerLock);
 	struct mPeerLink* peerLinkToDestroy = sPeerLink;
 	sPeerLink = NULL;
 	pthread_mutex_unlock(&sPeerLinkPointerLock);
 	if (peerLinkToDestroy)
 		mPeerLinkDestroy(peerLinkToDestroy);
-	mSDLDetachPlayer(&renderer.events, &renderer.player);
 	mInputMapDeinit(&renderer.core->inputMap);
 
 	mSDLDeinit(&renderer);
