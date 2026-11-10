@@ -673,6 +673,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 			SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Audio initialization failed; continuing video without audio: %s", SDL_GetError());
 			MutexLock(&thread.impl->sync.audioBufferMutex);
 			thread.impl->sync.audioWait = false;
+			ConditionWake(&thread.impl->sync.audioRequiredCond);
 			MutexUnlock(&thread.impl->sync.audioBufferMutex);
 		} else {
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
