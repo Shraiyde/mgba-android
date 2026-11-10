@@ -501,7 +501,8 @@ void mPeerLinkSetHostRole(struct mPeerLink* link, bool host) {
 }
 
 bool mPeerLinkReceiveFrame(struct mPeerLink* link, const uint8_t* frame, size_t size) {
-	if (!link || !frame || size < sizeof(struct PeerFrameHeader))
+	// Reject callbacks that were already in flight when the previous peer disconnected.
+	if (!link || !atomic_load(&link->connected) || !frame || size < sizeof(struct PeerFrameHeader))
 		return false;
 	struct PeerFrameHeader header;
 	memcpy(&header, frame, sizeof(header));
