@@ -370,6 +370,81 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 		mAndroidLinkCableSetRole(sLinkCable, connected && host);
 }
 
+static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
+	unsigned width, height;
+	bool softwareRenderer = false;
+	renderer->core->baseVideoSize(renderer->core, &width, &height);
+#if SDL_VERSION_ATLEAST(3, 0, 0)
+	renderer->window = SDL_CreateWindow(projectName, renderer->viewportWidth, renderer->viewportHeight, SDL_WINDOW_FULLSCREEN * renderer->player.fullscreen);
+	renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, NULL);
+	SDL_SetRenderVSync(renderer->sdlRenderer, 1);
+#else
+	renderer->window = SDL_CreateWindow(projectName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+		renderer->viewportWidth, renderer->viewportHeight,
+		SDL_WINDOW_FULLSCREEN_DESKTOP * renderer->player.fullscreen);
+	if (!renderer->window)
+		return false;
+	renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1,
+		SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+	if (!renderer->sdlRenderer) {
+		renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_SOFTWARE);
+		softwareRenderer = true;
+	}
+#endif
+	if (!renderer->window || !renderer->sdlRenderer) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not create Android SDL renderer: %s", SDL_GetError());
+		return false;
+	}
+	SDL_GetWindowSize(renderer->window, &renderer->viewportWidth, &renderer->viewportHeight);
+	renderer->player.window = renderer->window;
+
+create_android_game_texture:
+#ifdef COLOR_16_BIT
+#ifdef COLOR_5_6_5
+	renderer->sdlTex = SDL_CreateTexture(renderer->sdlRenderer, SDL_PIXELFORMAT_RGB565,
+		SDL_TEXTUREACCESS_STREAMING, width, height);
+#else
+	renderer->sdlTex = SDL_CreateTexture(renderer->sdlRenderer, SDL_PIXELFORMAT_ABGR1555,
+		SDL_TEXTUREACCESS_STREAMING, width, height);
+#endif
+#else
+	renderer->sdlTex = SDL_CreateTexture(renderer->sdlRenderer, SDL_PIXELFORMAT_ABGR8888,
+		SDL_TEXTUREACCESS_STREAMING, width, height);
+#endif
+	if (!renderer->sdlTex && !softwareRenderer) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android accelerated texture creation failed; retrying software renderer: %s", SDL_GetError());
+		SDL_DestroyRenderer(renderer->sdlRenderer);
+		renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, -1, SDL_RENDERER_SOFTWARE);
+		softwareRenderer = true;
+		if (renderer->sdlRenderer)
+			goto create_android_game_texture;
+	}
+	if (!renderer->sdlTex) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not create Android game texture: %s", SDL_GetError());
+		return false;
+	}
+
+	// Keep the core's software framebuffer in ordinary owned memory. Android's
+	// streaming-texture lock/unlock cycle is avoided entirely; each completed
+	// frame is copied into the SDL texture with SDL_UpdateTexture.
+	renderer->outputStride = (int) width;
+	renderer->outputBuffer = calloc((size_t) width * height, sizeof(mColor));
+	if (!renderer->outputBuffer) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not allocate Android GBA framebuffer");
+		return false;
+	}
+	renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
+	renderer->videoBufferAttached = true;
+	return true;
+}
+
+static void mSDLAndroidSWDeinit(struct mSDLRenderer* renderer) {
+	free(renderer->outputBuffer);
+	renderer->outputBuffer = NULL;
+	renderer->outputStride = 0;
+	renderer->videoBufferAttached = false;
+}
+
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	struct mCoreThread* context = user;
 	SDL_Event event;
@@ -431,7 +506,15 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 
 		{
 			latestFrameBlack = mSDLAndroidFrameIsBlack(renderer);
-			SDL_UnlockTexture(renderer->sdlTex);
+			if (SDL_UpdateTexture(renderer->sdlTex, NULL, renderer->outputBuffer,
+				renderer->outputStride * BYTES_PER_PIXEL) < 0) {
+				snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL_UpdateTexture: %.150s", SDL_GetError());
+				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android framebuffer upload failed: %s", SDL_GetError());
+				lastFramePresented = false;
+				mCoreThreadEnd(context);
+				mCoreSyncWaitFrameEnd(&context->impl->sync);
+				break;
+			}
 
 			SDL_Rect dest;
 			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
@@ -463,17 +546,6 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				SDL_Log("First Android game frame copied and presented; core frame=%u", renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0);
 			}
 
-			int stride = 0;
-			if (SDL_LockTexture(renderer->sdlTex, 0, (void**) &renderer->outputBuffer, &stride) < 0 || !renderer->outputBuffer) {
-				snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL_LockTexture: %.150s", SDL_GetError());
-				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android game texture relock failed: %s", SDL_GetError());
-				mCoreThreadEnd(context);
-				mCoreSyncWaitFrameEnd(&context->impl->sync);
-				break;
-			}
-			renderer->outputStride = stride / BYTES_PER_PIXEL;
-			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
-			renderer->videoBufferAttached = true;
 			mSDLAndroidApplyPendingPeerState();
 			mSDLAndroidUpdateCoopMailbox(renderer->core);
 		}
@@ -612,6 +684,8 @@ int main(int argc, char** argv) {
 	renderer.filter = renderer.core->opts.resampleVideo;
 
 	mSDLSWCreate(&renderer);
+	renderer.init = mSDLAndroidSWInit;
+	renderer.deinit = mSDLAndroidSWDeinit;
 	renderer.runloop = mSDLAndroidRunloop;
 
 	if (!renderer.init(&renderer)) {
