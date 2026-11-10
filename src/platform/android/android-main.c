@@ -482,7 +482,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			bool crashed = mCoreThreadHasCrashed(context);
 			mSDLAndroidUpdateDebugOverlay(renderer, frames, latestFrameBlack, active, crashed, lastFramePresented,
 				coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs);
-			SDL_Log("Android emulator heartbeat: frame=%u coreFPS=%.2f drawFPS=%.2f wait=%.3fms upload=%.3fms present=%.3fms coop=%.3fms active=%d crashed=%d black=%d",
+			SDL_Log("Android emulator heartbeat: frame=%u coreFPS=%.2f drawFPS=%.2f wait=%.3fms upload=%.3fms draw=%.3fms present=%.3fms coop=%.3fms active=%d crashed=%d black=%d",
 				frames, coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, active, crashed, latestFrameBlack);
 			waitTicks = uploadTicks = drawTicks = presentTicks = coopTicks = 0;
 		}
@@ -503,9 +503,6 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			// Release the sync mutex before doing SDL work so the core thread
 			// can post its first frame without waiting for the UI renderer.
 			mCoreSyncWaitFrameEnd(&context->impl->sync);
-
-			uploadTicks += SDL_GetPerformanceCounter() - stageStart;
-			stageStart = SDL_GetPerformanceCounter();
 
 			SDL_Rect dest;
 			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
@@ -541,6 +538,8 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				mCoreThreadEnd(context);
 				break;
 			}
+			uploadTicks += SDL_GetPerformanceCounter() - stageStart;
+			stageStart = SDL_GetPerformanceCounter();
 
 			SDL_Rect dest;
 			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
