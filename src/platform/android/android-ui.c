@@ -405,6 +405,14 @@ void mAndroidOverlaySetWindow(SDL_Window* window) {
 		_freeOverlayCache();
 	}
 	overlay.window = window;
+	if (!overlay.touchesInitialized) {
+		int i;
+		for (i = 0; i < MAX_TOUCHES; ++i)
+			overlay.touches[i].id = -1;
+		overlay.touchesInitialized = true;
+	} else {
+		mAndroidOverlayReset();
+	}
 }
 
 void mAndroidOverlayReset(void) {
