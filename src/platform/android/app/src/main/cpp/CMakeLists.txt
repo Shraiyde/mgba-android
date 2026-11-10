@@ -5,6 +5,9 @@ set(MGBA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../..)
 set(SDL2_SRC "" CACHE PATH "Path to the SDL2 source tree")
 
 set(LIBMGBA_ONLY ON)
+# Keep the compact core build, but include bundled zlib/minizip so ZIP ROMs work.
+set(DISABLE_DEPS OFF CACHE BOOL "" FORCE)
+set(USE_ZLIB ON CACHE BOOL "" FORCE)
 add_subdirectory(${MGBA_ROOT} mgba)
 
 if(NOT SDL2_SRC)
