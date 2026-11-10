@@ -244,10 +244,20 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	SDL_Event event;
 	bool firstFrameLogged = false;
 	bool renderCopyErrorLogged = false;
+	Uint32 lastDiagnostics = SDL_GetTicks();
 
-	SDL_Log("Android video loop entered: window=%p renderer=%p texture=%p size=%ux%u",
-		renderer->window, renderer->sdlRenderer, renderer->sdlTex, renderer->width, renderer->height);
+	SDL_Log("Android video loop entered: window=%p renderer=%p texture=%p size=%ux%u output=%p",
+		renderer->window, renderer->sdlRenderer, renderer->sdlTex, renderer->width, renderer->height, renderer->outputBuffer);
 	while (mCoreThreadIsActive(context)) {
+		Uint32 now = SDL_GetTicks();
+		if ((Uint32)(now - lastDiagnostics) >= 2000) {
+			lastDiagnostics = now;
+			SDL_Log("Android emulator heartbeat: frame=%u active=%d crashed=%d output=%p sample0=%u sampleCenter=%u",
+				renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0,
+				mCoreThreadIsActive(context), mCoreThreadHasCrashed(context), renderer->outputBuffer,
+				renderer->outputBuffer ? (unsigned) renderer->outputBuffer[0] : 0,
+				renderer->outputBuffer ? (unsigned) renderer->outputBuffer[(renderer->height / 2) * (renderer->width) + (renderer->width / 2)] : 0);
+		}
 		while (SDL_PollEvent(&event)) {
 			mAndroidOverlayHandleEvent(&event);
 			mSDLHandleEvent(context, &renderer->player, &event);
@@ -349,7 +359,9 @@ int main(int argc, char** argv) {
 		.rewindBufferInterval = 1,
 		.audioBuffers = 1024,
 		.videoSync = false,
-		.audioSync = true,
+		// Video must remain independent of audio-device callback timing.
+		// This Android baseline intentionally runs audio asynchronously.
+		.audioSync = false,
 		.volume = 0x100,
 		.logLevel = mLOG_WARN | mLOG_ERROR | mLOG_FATAL,
 		.fullscreen = 1,
