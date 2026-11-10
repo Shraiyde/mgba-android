@@ -238,6 +238,8 @@ static struct {
 		Sint64 id;
 		SDL_Keycode key;
 	} touches[MAX_TOUCHES];
+    SDL_Rect lastView;
+    bool hasLastView;
 } overlay;
 
 static struct {
@@ -408,11 +410,22 @@ void mAndroidOverlaySetWindow(SDL_Window* window) {
 void mAndroidOverlayReset(void) {
 	int i;
 	for (i = 0; i < MAX_TOUCHES; ++i) {
-		overlay.touches[i].id = 0;
+		if (overlay.touches[i].id != -1) {
+			_pushKey(overlay.touches[i].key, false);
+			overlay.touches[i].id = -1;
+		}
 	}
 }
 
 void mAndroidOverlayHandleEvent(const SDL_Event* event) {
+	if (event->type == SDL_WINDOWEVENT && event->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+		mAndroidOverlayReset();
+		return;
+	}
+	if (event->type == SDL_APP_WILLENTERBACKGROUND) {
+		mAndroidOverlayReset();
+		return;
+	}
 	if (event->type != SDL_FINGERDOWN && event->type != SDL_FINGERUP && event->type != SDL_FINGERMOTION) {
 		return;
 	}
@@ -436,14 +449,14 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 			return;
 		}
 		struct OverlayButton buttons[12];
-		int n = _layout(NULL, buttons);
+		int n = _layout(overlay.hasLastView ? &overlay.lastView : NULL, buttons);
 		int i;
 		for (i = 0; i < n; ++i) {
 			if (x >= buttons[i].rect.x && x < buttons[i].rect.x + buttons[i].rect.w &&
 			    y >= buttons[i].rect.y && y < buttons[i].rect.y + buttons[i].rect.h) {
 				int slot;
 				for (slot = 0; slot < MAX_TOUCHES; ++slot) {
-					if (!overlay.touches[slot].id) {
+					if (overlay.touches[slot].id == -1) {
 						break;
 					}
 				}
@@ -460,7 +473,7 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 
 	// FINGERUP / FINGERMOTION: release or slide between buttons
 	struct OverlayButton buttons[12];
-	int n = overlay.hidden ? 0 : _layout(NULL, buttons);
+	int n = overlay.hidden ? 0 : _layout(overlay.hasLastView ? &overlay.lastView : NULL, buttons);
 	int i;
 	for (i = 0; i < MAX_TOUCHES; ++i) {
 		if (overlay.touches[i].id != id) {
@@ -477,7 +490,7 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 		}
 		if (event->type == SDL_FINGERUP) {
 			_pushKey(overlay.touches[i].key, false);
-			overlay.touches[i].id = 0;
+			overlay.touches[i].id = -1;
 		} else if (!target || target->key != overlay.touches[i].key) {
 			_pushKey(overlay.touches[i].key, false);
 			overlay.touches[i].id = 0;
@@ -501,6 +514,12 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 
 	if (overlay.hidden) {
 		return;
+	}
+	if (view) {
+		overlay.lastView = *view;
+		overlay.hasLastView = true;
+	} else {
+		overlay.hasLastView = false;
 	}
 	struct OverlayButton buttons[12];
 	int n = _layout(view, buttons);
