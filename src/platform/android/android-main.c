@@ -246,8 +246,8 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 		mPeerLinkSetHostRole(sPeerLink, host);
 		mPeerLinkSetConnected(sPeerLink, connected);
 	}
-	if (connected && sLinkCable)
-		mAndroidLinkCableSetRole(sLinkCable, host);
+	if (sLinkCable)
+		mAndroidLinkCableSetRole(sLinkCable, connected && host);
 }
 
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
