@@ -105,19 +105,30 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		frames, frames ? (frameBlack ? "YES" : "NO") : "WAITING");
 	snprintf(threadStatus, sizeof(threadStatus), "EMULATION THREAD: %s",
 		threadCrashed ? "CRASHED" : (threadActive ? "RUNNING" : "STOPPED"));
-	if (gba && cpu) {
+	if (gba && cpu && gba->sync) {
+		int pending;
+		bool videoWait;
+		uint32_t postCount, startCount, acceptedCount, endCount;
+		MutexLock(&gba->sync->videoFrameMutex);
+		pending = gba->sync->videoFramePending;
+		videoWait = gba->sync->videoFrameWait;
+		postCount = gba->sync->videoPostCount;
+		startCount = gba->sync->videoStartCount;
+		acceptedCount = gba->sync->videoAcceptedCount;
+		endCount = gba->sync->videoEndCount;
+		MutexUnlock(&gba->sync->videoFrameMutex);
 		snprintf(videoStatus, sizeof(videoStatus),
-			"CPU %s PC=%08X CYC=%d NEXT=%d HLT=%d | V=%d %s F=%u EV=%s BIOS=%d",
+			"CPU %s PC=%08X CYC=%d NEXT=%d HLT=%d | V=%d F=%u P=%d W=%d A=%u/%u E=%u",
 			cycleDelta ? "ADVANCING" : (havePreviousSample ? "STALLED" : "CHECKING"),
 			pc, cpu->cycles, cpu->nextEvent, cpu->halted, gba->video.vcount,
-			scanlineMoved ? "V-MOVE" : "V-STATIC", gba->video.frameCounter,
-			gba->video.event.callback ? "SCHEDULED" : "MISSING", gba->memory.fullBios);
-		SDL_Log("GBA diagnostic: pc=%08X pcMoved=%d cycles=%d nextEvent=%d globalCycles=%llu delta=%llu halted=%d vcount=%d vMoved=%d frames=%u videoEvent=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d",
+			gba->video.frameCounter, pending, videoWait, acceptedCount, startCount, endCount);
+		SDL_Log("GBA diagnostic: pc=%08X pcMoved=%d cycles=%d nextEvent=%d globalCycles=%llu delta=%llu halted=%d vcount=%d vMoved=%d frames=%u videoEvent=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
 			pc, pcMoved, cpu->cycles, cpu->nextEvent, (unsigned long long) globalCycles,
 			(unsigned long long) cycleDelta, cpu->halted, gba->video.vcount, scanlineMoved,
 			gba->video.frameCounter, gba->video.event.callback ? "scheduled" : "missing",
 			gba->video.event.when, (void*) gba->timing.root, gba->cpuBlocked,
-			(void*) gba->memory.rom, gba->memory.romSize, gba->memory.fullBios);
+			(void*) gba->memory.rom, gba->memory.romSize, gba->memory.fullBios,
+			pending, videoWait, postCount, startCount, acceptedCount, endCount);
 		previousGlobalCycles = globalCycles;
 		previousPC = pc;
 		previousVcount = gba->video.vcount;
