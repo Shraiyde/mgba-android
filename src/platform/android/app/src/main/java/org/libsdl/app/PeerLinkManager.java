@@ -109,7 +109,7 @@ public final class PeerLinkManager {
     };
     private final AtomicLong sendCounter = new AtomicLong(1);
     private final long[] receiveCounters = new long[] {0, 0};
-    private final List<IceCandidate> pendingCandidates = new ArrayList<>();
+    private final List<IceCandidate> pendingCandidates = Collections.synchronizedList(new ArrayList<>());
 
     private MqttAsyncClient mqtt;
     private PeerConnectionFactory factory;
@@ -123,20 +123,20 @@ public final class PeerLinkManager {
     private String toJoinTopic;
     private String relayHostTopic;
     private String relayJoinTopic;
-    private boolean host;
-    private boolean pcServerMode;
-    private boolean pcHelloSent;
+    private volatile boolean host;
+    private volatile boolean pcServerMode;
+    private volatile boolean pcHelloSent;
     private long lastPcServerHeartbeatAt;
     private String pcClientId;
-    private boolean mqttConnected;
-    private boolean retryEnabled;
-    private boolean accepted;
-    private boolean joinSent;
-    private boolean directConnected;
-    private boolean nativeConnected;
+    private volatile boolean mqttConnected;
+    private volatile boolean retryEnabled;
+    private volatile boolean accepted;
+    private volatile boolean joinSent;
+    private volatile boolean directConnected;
+    private volatile boolean nativeConnected;
     private KeyPair ecdhKeyPair;
     private byte[] pinKey;
-    private byte[] sessionKey;
+    private volatile byte[] sessionKey;
 
     private PeerLinkManager() {}
 
@@ -768,9 +768,11 @@ public final class PeerLinkManager {
     private void flushPendingCandidates() {
         if (peerConnection == null || peerConnection.getRemoteDescription() == null)
             return;
-        for (IceCandidate candidate : pendingCandidates)
-            peerConnection.addIceCandidate(candidate);
-        pendingCandidates.clear();
+        synchronized (pendingCandidates) {
+            for (IceCandidate candidate : pendingCandidates)
+                peerConnection.addIceCandidate(candidate);
+            pendingCandidates.clear();
+        }
     }
 
     private void sendSignal(String type, String value) {
@@ -797,7 +799,7 @@ public final class PeerLinkManager {
         return manager != null && manager.sendFrameInternal(frame);
     }
 
-    private boolean sendFrameInternal(byte[] frame) {
+    private synchronized boolean sendFrameInternal(byte[] frame) {
         if (!accepted || sessionKey == null || frame == null)
             return false;
         try {
@@ -828,7 +830,7 @@ public final class PeerLinkManager {
         return output.array();
     }
 
-    private void handleEncryptedFrame(byte[] payload) {
+    private synchronized void handleEncryptedFrame(byte[] payload) {
         if (sessionKey == null || payload == null || payload.length < 28)
             return;
         try {
@@ -847,7 +849,7 @@ public final class PeerLinkManager {
         } catch (Exception ignored) {}
     }
 
-    private void updateNativeConnection() {
+    private synchronized void updateNativeConnection() {
         boolean connected = accepted && (mqttConnected || directConnected);
         if (connected != nativeConnected) {
             nativeConnected = connected;
