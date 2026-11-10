@@ -696,6 +696,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         }
 
         SDLActivity.nativeQuit();
+        PeerLinkManager.detachActivity(this);
 
         super.onDestroy();
     }
