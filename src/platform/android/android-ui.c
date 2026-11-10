@@ -242,6 +242,7 @@ static struct {
     SDL_Rect lastView;
     bool hasLastView;
     bool touchesInitialized;
+    bool romLoaded;
 } overlay;
 
 static struct {
@@ -434,14 +435,16 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	out[n].label = "SELECT";
 	++n;
 
-	// Manual ROM selection remains available before a game is loaded.
-	out[n].rect.x = w / 2 - cell * 3 / 2;
-	out[n].rect.y = cell + 16;
-	out[n].rect.w = cell * 3;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_F14;
-	out[n].label = "LOAD ROM";
-	++n;
+	// Manual ROM selection remains available until a game has loaded.
+	if (!overlay.romLoaded) {
+		out[n].rect.x = w / 2 - cell * 2;
+		out[n].rect.y = cell + 16;
+		out[n].rect.w = cell * 4;
+		out[n].rect.h = cell;
+		out[n].key = SDLK_F14;
+		out[n].label = "LOAD ROM";
+		++n;
+	}
 
 	// Always-visible co-op entry point, separate from the emulator buttons.
 	out[n].rect.x = w / 2 - cell;
@@ -469,6 +472,10 @@ static const SDL_Rect* _toggleRect(void) {
 	rect.w = TOGGLE_SIZE;
 	rect.h = TOGGLE_SIZE;
 	return &rect;
+}
+
+void mAndroidOverlaySetRomLoaded(bool loaded) {
+	overlay.romLoaded = loaded;
 }
 
 void mAndroidOverlaySetWindow(SDL_Window* window) {
