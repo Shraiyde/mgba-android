@@ -504,6 +504,14 @@ void mAndroidOverlaySetWindow(SDL_Window* window) {
 		}
 	}
 	overlay.window = window;
+	if (!window) {
+		if (debugTexture) SDL_DestroyTexture(debugTexture);
+		if (debugSurface) SDL_FreeSurface(debugSurface);
+		debugTexture = NULL;
+		debugSurface = NULL;
+		debugRenderer = NULL;
+		debugPanelWidth = 0;
+	}
 	if (!overlay.touchesInitialized) {
 		int i;
 		for (i = 0; i < MAX_TOUCHES; ++i)
