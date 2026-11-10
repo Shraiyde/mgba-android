@@ -20,6 +20,7 @@ char* mAndroidPickRom(void);
 // handleEvent for every polled event (it synthesizes keyboard events for
 // touches), and draw after the frame blit. `view` is the letterboxed game rect.
 void mAndroidOverlaySetWindow(SDL_Window* window);
+void mAndroidOverlaySetRomLoaded(bool loaded);
 void mAndroidOverlayReset(void);
 void mAndroidOverlayHandleEvent(const SDL_Event* event);
 void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view);
