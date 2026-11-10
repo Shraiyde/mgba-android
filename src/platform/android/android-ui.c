@@ -258,6 +258,7 @@ static struct {
 static char debugLines[DEBUG_LINE_COUNT][192];
 static SDL_Surface* debugSurface;
 static SDL_Texture* debugTexture;
+static SDL_Renderer* debugRenderer;
 static int debugPanelWidth;
 static const int debugPanelHeight = 92;
 
@@ -269,6 +270,16 @@ void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char
 }
 
 static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
+	// SDL textures belong to the renderer that created them. A recreated
+	// Activity/window must not reuse the previous renderer's debug texture.
+	if (debugRenderer != renderer) {
+		if (debugTexture) SDL_DestroyTexture(debugTexture);
+		if (debugSurface) SDL_FreeSurface(debugSurface);
+		debugTexture = NULL;
+		debugSurface = NULL;
+		debugPanelWidth = 0;
+		debugRenderer = renderer;
+	}
 	int width = windowWidth - 16;
 	if (width > 760) width = 760;
 	if (width < 160) return;
@@ -484,6 +495,13 @@ void mAndroidOverlaySetRomLoaded(bool loaded) {
 void mAndroidOverlaySetWindow(SDL_Window* window) {
 	if (overlay.window != window) {
 		_freeOverlayCache();
+		if (window) {
+			// A new SDL window means a new emulator session. Reset UI state
+			// that may have survived an Activity recreation in native statics.
+			overlay.romLoaded = false;
+			overlay.hidden = false;
+			overlay.hasLastView = false;
+		}
 	}
 	overlay.window = window;
 	if (!overlay.touchesInitialized) {
