@@ -147,8 +147,6 @@ public final class PeerLinkManager {
             instance = new PeerLinkManager();
         nativeInitialize();
         PeerLinkManager manager = instance;
-        if (manager.accepted && manager.sessionKey != null)
-            manager.nativePeerConnected(manager.host);
         if (created)
             manager.handler.post(manager::restoreSavedSession);
     }
@@ -168,6 +166,21 @@ public final class PeerLinkManager {
             startJoin(savedPin);
         else if ("pc".equals(savedRole))
             startPcServerJoin(savedPin);
+    }
+
+    public static void syncNativeConnection() {
+        PeerLinkManager manager = instance;
+        if (manager != null)
+            manager.syncNativeConnectionInternal();
+    }
+
+    private void syncNativeConnectionInternal() {
+        boolean connected = accepted && (mqttConnected || directConnected);
+        nativeConnected = connected;
+        if (connected)
+            nativePeerConnected(host);
+        else
+            nativePeerDisconnected();
     }
 
     public static synchronized void detachActivity(Activity value) {
