@@ -409,9 +409,9 @@ public final class PeerLinkManager {
         } catch (Exception ignored) {}
     }
 
-    private void publishJoinMessage() {
+    private boolean publishJoinMessage() {
         if (host || !mqttConnected || sessionId == null || ecdhKeyPair == null || pinKey == null)
-            return;
+            return false;
         try {
             JSONObject join = new JSONObject();
             String joinPublicKey = Base64.encodeToString(ecdhKeyPair.getPublic().getEncoded(), Base64.NO_WRAP);
@@ -419,9 +419,10 @@ public final class PeerLinkManager {
             join.put("session", sessionId);
             join.put("pub", joinPublicKey);
             join.put("proof", hmacText(pinKey, sessionId + "|" + hostPublicKey + "|" + joinPublicKey));
-            publish(toHostTopic(), join.toString().getBytes(StandardCharsets.UTF_8), 1, false);
+            return publish(toHostTopic(), join.toString().getBytes(StandardCharsets.UTF_8), 1, false);
         } catch (Exception e) {
             showMessage("Could not join room: " + e.getMessage());
+            return false;
         }
     }
 
@@ -502,10 +503,12 @@ public final class PeerLinkManager {
             hello.put("type", "hello");
             hello.put("pub", publicKey);
             hello.put("proof", hmacText(pinKey, sessionId + "|" + pcClientId + "|" + publicKey));
-            publish(pcUpHelloTopic(), hello.toString().getBytes(StandardCharsets.UTF_8), 1, false);
-            pcHelloSent = true;
+            pcHelloSent = publish(pcUpHelloTopic(), hello.toString().getBytes(StandardCharsets.UTF_8), 1, false);
             handler.removeCallbacks(pcHeartbeat);
-            handler.postDelayed(pcHeartbeat, 10000);
+            if (pcHelloSent)
+                handler.postDelayed(pcHeartbeat, 10000);
+            else
+                handler.postDelayed(this::sendPcHello, 5000);
         } catch (Exception e) {
             showStatus("PC server connection error", e.getMessage());
         }
@@ -572,8 +575,7 @@ public final class PeerLinkManager {
         pinKey = derivedPinKey;
         ecdhKeyPair = createEcdhKeyPair();
         subscribe(toJoinTopic(), relayJoinTopic());
-        publishJoinMessage();
-        joinSent = true;
+        joinSent = publishJoinMessage();
         showStatus("Pairing", "Authenticating the other phone…");
     }
 
@@ -581,13 +583,13 @@ public final class PeerLinkManager {
         if (!"join".equals(join.optString("type")) || !sessionId.equals(join.optString("session")) || (accepted && directConnected))
             return;
 
-        resetPeerConnection();
-        accepted = false;
         String joinPublicKey = join.getString("pub");
         String expected = hmacText(pinKey, sessionId + "|" + hostPublicKey + "|" + joinPublicKey);
         if (!constantTimeEquals(expected, join.getString("proof")))
             return;
 
+        resetPeerConnection();
+        accepted = false;
         byte[] shared = deriveSharedSecret(ecdhKeyPair, joinPublicKey);
         sessionKey = deriveSessionKey(shared, pinKey, sessionId);
         accepted = true;
@@ -740,10 +742,10 @@ public final class PeerLinkManager {
         channel.registerObserver(new DataChannel.Observer() {
             @Override public void onBufferedAmountChange(long previousAmount) {}
             @Override public void onStateChange() {
-                if (channel.state() == DataChannel.State.OPEN) {
-                    directConnected = true;
+                directConnected = channel.state() == DataChannel.State.OPEN;
+                if (directConnected) {
                     showStatus("Connected directly", "Phone-to-phone connection is active.");
-                } else if (accepted && !directConnected) {
+                } else if (accepted) {
                     showStatus("Connected by relay", "Using the automatic relay route.");
                 }
                 updateNativeConnection();
