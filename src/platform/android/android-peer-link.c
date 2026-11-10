@@ -404,6 +404,13 @@ bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t*
 		&& atomic_load(&link->localSioActive) && atomic_load(&link->remoteSioActive) && waitResult == 0)
 		waitResult = pthread_cond_timedwait(&link->sioCond, &link->lock, &deadline);
 	bool received = link->sioQueueCount > 0 && !link->sioQueueOverflow;
+	if (link->sioQueueOverflow) {
+		// Drop the damaged transfer batch and allow later transfers to recover.
+		link->sioQueueRead = 0;
+		link->sioQueueWrite = 0;
+		link->sioQueueCount = 0;
+		link->sioQueueOverflow = false;
+	}
 	if (received) {
 		*remoteValue = link->sioQueue[link->sioQueueRead];
 		link->sioQueueRead = (link->sioQueueRead + 1) % 32;
@@ -422,6 +429,9 @@ void mPeerLinkStop(struct mPeerLink* link) {
 	link->sioQueueWrite = 0;
 	link->sioQueueCount = 0;
 	link->sioQueueOverflow = false;
+	link->queueRead = 0;
+	link->queueWrite = 0;
+	link->queueCount = 0;
 	pthread_cond_broadcast(&link->sioCond);
 	pthread_mutex_unlock(&link->lock);
 	if (!link->threadStarted)
@@ -455,6 +465,10 @@ void mPeerLinkSetConnected(struct mPeerLink* link, bool connected) {
 		link->sioQueueWrite = 0;
 		link->sioQueueCount = 0;
 		link->sioQueueOverflow = false;
+		// Events belong to one peer session; never replay them after reconnect.
+		link->queueRead = 0;
+		link->queueWrite = 0;
+		link->queueCount = 0;
 		pthread_cond_broadcast(&link->sioCond);
 	}
 	pthread_mutex_unlock(&link->lock);
