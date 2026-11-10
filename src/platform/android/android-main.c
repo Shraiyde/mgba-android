@@ -264,6 +264,9 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 		}
 
 		if (!mCoreSyncWaitFrameStart(&context->impl->sync)) {
+			// The core is waiting on this sync lock; apply mailbox reads/writes here
+			// so the game bus is never accessed concurrently with CPU execution.
+			mSDLAndroidUpdateCoopMailbox(renderer->core);
 			// Keep the Android controls visible even before the GBA core has
 			// produced its first frame (or while video sync is waiting).
 			// Release the sync mutex before doing SDL work so the core thread
@@ -287,7 +290,6 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			mAndroidOverlayDraw(renderer->sdlRenderer, &dest);
 			SDL_RenderPresent(renderer->sdlRenderer);
 			SDL_Delay(16);
-			mSDLAndroidUpdateCoopMailbox(renderer->core);
 			continue;
 		}
 
@@ -328,9 +330,9 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				break;
 			}
 			renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, stride / BYTES_PER_PIXEL);
+			mSDLAndroidUpdateCoopMailbox(renderer->core);
 		}
 		mCoreSyncWaitFrameEnd(&context->impl->sync);
-		mSDLAndroidUpdateCoopMailbox(renderer->core);
 	}
 	if (!firstFrameLogged) {
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android video loop exited before presenting its first frame (active=%d, crashed=%d)",
