@@ -49,12 +49,12 @@ void mVideoThreadProxyInit(struct mVideoLogger* logger) {
 	MutexInit(&proxyRenderer->mutex);
 	RingFIFOInit(&proxyRenderer->dirtyQueue, 0x40000);
 
-	// Do not advertise an idle worker unless pthread_create actually succeeded.
-	proxyRenderer->threadState = PROXY_THREAD_STOPPED;
+	// Set the run state before creation so the new worker cannot observe STOPPED
+	// and exit during its startup race.
+	proxyRenderer->threadState = PROXY_THREAD_IDLE;
 	proxyRenderer->threadCreated = ThreadCreate(&proxyRenderer->thread, _proxyThread, proxyRenderer) == 0;
-	if (proxyRenderer->threadCreated) {
-		proxyRenderer->threadState = PROXY_THREAD_IDLE;
-	} else {
+	if (!proxyRenderer->threadCreated) {
+		proxyRenderer->threadState = PROXY_THREAD_STOPPED;
 		mLOG(GBA_VIDEO, ERROR, "Could not start proxy rendering thread");
 	}
 }
