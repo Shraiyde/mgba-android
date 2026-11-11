@@ -45,6 +45,14 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # Keep the debug signing certificate stable across ephemeral GitHub
+      # runners so each published APK can update the previous test build.
+      - name: Restore stable debug signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-${{ github.repository }}-v1
+
       - name: Fetch SDL2 source
         run: |
           git clone --depth 1 --branch release-2.30.9 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL2"
