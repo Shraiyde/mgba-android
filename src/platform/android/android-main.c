@@ -100,6 +100,8 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		static bool videoWait;
 		static uint32_t postCount, startCount, acceptedCount, endCount;
 		static bool haveSyncSnapshot;
+		static uint64_t lastVideoWaitNs, lastAudioWaitNs, lastAudioWaitCount;
+		static double videoPostWaitMs, audioWaitMs;
 		if (MutexTryLock(&gba->sync->videoFrameMutex) == 0) {
 			pending = gba->sync->videoFramePending;
 			videoWait = gba->sync->videoFrameWait;
@@ -107,13 +109,25 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 			startCount = gba->sync->videoStartCount;
 			acceptedCount = gba->sync->videoAcceptedCount;
 			endCount = gba->sync->videoEndCount;
+			uint64_t total = gba->sync->videoPostWaitNs;
+			if (total >= lastVideoWaitNs && postCount) videoPostWaitMs = (double) (total - lastVideoWaitNs) / 1000000.0 / (double) (postCount ? postCount - (postCount > 0 ? postCount - 1 : 0) : 1);
+			lastVideoWaitNs = total;
 			MutexUnlock(&gba->sync->videoFrameMutex);
 			haveSyncSnapshot = true;
 		}
+		if (MutexTryLock(&gba->sync->audioBufferMutex) == 0) {
+			uint64_t total = gba->sync->audioWaitNs;
+			uint64_t count = gba->sync->audioWaitCount;
+			if (count > lastAudioWaitCount && total >= lastAudioWaitNs)
+				audioWaitMs = (double) (total - lastAudioWaitNs) / 1000000.0 / (double) (count - lastAudioWaitCount);
+			lastAudioWaitNs = total;
+			lastAudioWaitCount = count;
+			MutexUnlock(&gba->sync->audioBufferMutex);
+		}
 		SDL_RendererInfo info;
 		const char* rendererName = SDL_GetRendererInfo(renderer->sdlRenderer, &info) == 0 ? info.name : "unknown";
-		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1fms V=%d Q=%d",
-			rendererName ? rendererName : "unknown", waitMs, uploadMs, drawMs, presentMs, coopMs,
+		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f V%.1fms V=%d Q=%d",
+			rendererName ? rendererName : "unknown", waitMs, uploadMs, drawMs, presentMs, coopMs, audioWaitMs, videoPostWaitMs,
 			gba->video.vcount, haveSyncSnapshot ? pending : -1);
 		SDL_Log("GBA diagnostic: fpsCore=%.2f fpsDraw=%.2f waitMs=%.3f uploadMs=%.3f presentMs=%.3f coopMs=%.3f renderer=%s pc=%08X cycles=%d nextEvent=%d halted=%d vcount=%d frames=%u event=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
 			coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs, rendererName ? rendererName : "unknown",
