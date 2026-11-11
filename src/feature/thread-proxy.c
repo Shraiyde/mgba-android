@@ -123,7 +123,16 @@ void _proxyThreadRecover(struct mVideoThreadProxy* proxyRenderer) {
 
 static bool _writeData(struct mVideoLogger* logger, const void* data, size_t length) {
 	struct mVideoThreadProxy* proxyRenderer = (struct mVideoThreadProxy*) logger;
-	while (!RingFIFOWrite(&proxyRenderer->dirtyQueue, data, length)) {
+	while (true) {
+		MutexLock(&proxyRenderer->mutex);
+		if (proxyRenderer->threadState == PROXY_THREAD_STOPPED) {
+			mLOG(GBA_VIDEO, ERROR, "Proxy thread stopped before accepting render data");
+			MutexUnlock(&proxyRenderer->mutex);
+			return false;
+		}
+		MutexUnlock(&proxyRenderer->mutex);
+		if (RingFIFOWrite(&proxyRenderer->dirtyQueue, data, length))
+			return true;
 		mLOG(GBA_VIDEO, DEBUG, "Can't write %"PRIz"u bytes. Proxy thread asleep?", length);
 		MutexLock(&proxyRenderer->mutex);
 		if (proxyRenderer->threadState == PROXY_THREAD_STOPPED) {
@@ -135,7 +144,6 @@ static bool _writeData(struct mVideoLogger* logger, const void* data, size_t len
 		ConditionWait(&proxyRenderer->fromThreadCond, &proxyRenderer->mutex);
 		MutexUnlock(&proxyRenderer->mutex);
 	}
-	return true;
 }
 
 static bool _readData(struct mVideoLogger* logger, void* data, size_t length, bool block) {
@@ -158,11 +166,18 @@ static bool _readData(struct mVideoLogger* logger, void* data, size_t length, bo
 static void _postEvent(struct mVideoLogger* logger, enum mVideoLoggerEvent event) {
 	struct mVideoThreadProxy* proxyRenderer = (struct mVideoThreadProxy*) logger;
 	MutexLock(&proxyRenderer->mutex);
+	if (proxyRenderer->threadState == PROXY_THREAD_STOPPED) {
+		MutexUnlock(&proxyRenderer->mutex);
+		mLOG(GBA_VIDEO, ERROR, "Cannot post renderer event: proxy thread is stopped");
+		return;
+	}
 	proxyRenderer->event = event;
-	while (proxyRenderer->event) {
+	while (proxyRenderer->event && proxyRenderer->threadState != PROXY_THREAD_STOPPED) {
 		ConditionWake(&proxyRenderer->toThreadCond);
 		ConditionWait(&proxyRenderer->fromThreadCond, &proxyRenderer->mutex);
 	}
+	if (proxyRenderer->threadState == PROXY_THREAD_STOPPED)
+		proxyRenderer->event = 0;
 	MutexUnlock(&proxyRenderer->mutex);
 }
 
