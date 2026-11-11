@@ -115,8 +115,18 @@ public final class PeerLinkManager {
                     accepted = false;
                     pcHelloSent = false;
                     sessionKey = null;
+                    pcPeerId = null;
+                    pcPeerPublicKey = null;
+                    sendCounter.set(1);
+                    resetReceiveCounters();
+                    ecdhKeyPair = null;
+                    try {
+                        ecdhKeyPair = createEcdhKeyPair();
+                    } catch (Exception ignored) {}
                     lastPcServerHeartbeatAt = 0;
                     updateNativeConnection();
+                    if (mqttConnected)
+                        sendPcHello();
                     showStatus("PC server offline", "The PC server stopped responding. Waiting for it to reconnect…");
                 }
                 handler.postDelayed(this, 10000);
@@ -652,7 +662,18 @@ public final class PeerLinkManager {
             sessionKey = null;
             pcPeerId = null;
             pcPeerPublicKey = null;
+            sendCounter.set(1);
+            resetReceiveCounters();
+            ecdhKeyPair = null;
+            try {
+                // A returning peer may reuse its previous public key. Rotate
+                // our ephemeral key before accepting another peer packet.
+                ecdhKeyPair = createEcdhKeyPair();
+            } catch (Exception ignored) {}
+            pcHelloSent = false;
             updateNativeConnection();
+            if (mqttConnected)
+                sendPcHello();
             showStatus("Player disconnected", "Holding the session while the other phone reconnects…");
         } else if ("full".equals(type) || "rejected".equals(type)) {
             showStatus("PC server refused connection", data != null ? data.optString("reason", "Unable to join this room.") : "Unable to join this room.");
