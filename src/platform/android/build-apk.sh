@@ -28,7 +28,7 @@ if [ -x gradlew ]; then
 	GRADLE_CMD=./gradlew
 fi
 
-"$GRADLE_CMD" -PSDL2_SRC="$SDL2_SRC" -PMGBA_VERSION="$(grep -hE '^set\(LIB_VERSION_(MAJOR|MINOR|PATCH) ' ../../../version.cmake | sed 's/^set(LIB_VERSION_[A-Z]* //;s/)$//' | paste -sd. -)" -PAPP_VERSION_CODE="${APP_VERSION_CODE:-1}" "assemble${BUILDTYPE^}"
+"$GRADLE_CMD" -PSDL2_SRC="$SDL2_SRC" -PMGBA_VERSION="$(grep -hE '^set\(LIB_VERSION_(MAJOR|MINOR|PATCH) ' ../../../version.cmake | sed 's/^set(LIB_VERSION_[A-Z]* //;s/)$//' | paste -sd. -)" -PAPP_VERSION_CODE="${APP_VERSION_CODE:-1}" "assemble${BUILDTYPE^}" --stacktrace
 
 echo
 echo "APK: $(pwd)/app/build/outputs/apk/$BUILDTYPE/app-$BUILDTYPE.apk"
