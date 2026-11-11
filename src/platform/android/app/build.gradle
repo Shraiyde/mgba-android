@@ -24,7 +24,7 @@ android {
 		minSdk 21
 		targetSdk 34
 		versionCode (project.findProperty('APP_VERSION_CODE') ?: '1').toInteger()
-		versionName project.findProperty('MGBA_VERSION') ?: '0.1.0'
+		versionName (project.findProperty('MGBA_VERSION') ?: '0.1.0')
 
 		externalNativeBuild {
 			cmake {
