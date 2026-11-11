@@ -27,6 +27,9 @@ struct mCoreSync {
 	Condition audioRequiredCond;
 	Mutex audioBufferMutex;
 	size_t audioHighWater;
+	uint64_t audioWaitNs;
+	uint64_t audioWaitCount;
+	uint64_t videoPostWaitNs;
 
 	float fpsTarget;
 };
