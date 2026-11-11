@@ -463,7 +463,7 @@ public final class PeerLinkManager {
                     showStatus("Connection service unavailable", "Retrying the co-op rendezvous…");
                     if (retryEnabled)
                         handler.postDelayed(() -> {
-                            if (retryEnabled && (mqtt == null || !mqtt.isConnected()))
+                            if (retryEnabled && mqtt == client && !client.isConnected())
                                 connectMqtt(onReady);
                         }, 5000);
                 }
