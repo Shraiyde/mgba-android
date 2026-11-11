@@ -544,6 +544,14 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 
 		{
 			waitTicks += SDL_GetPerformanceCounter() - stageStart;
+
+			// Co-op mailbox access touches live GBA memory, so finish it while
+			// the emulation thread is still blocked on this frame.
+			stageStart = SDL_GetPerformanceCounter();
+			mSDLAndroidApplyPendingPeerState();
+			mSDLAndroidUpdateCoopMailbox(renderer->core);
+			coopTicks += SDL_GetPerformanceCounter() - stageStart;
+
 			latestFrameBlack = mSDLAndroidFrameIsBlack(renderer);
 			stageStart = SDL_GetPerformanceCounter();
 			if (SDL_UpdateTexture(renderer->sdlTex, NULL, renderer->outputBuffer,
@@ -556,6 +564,11 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				break;
 			}
 			uploadTicks += SDL_GetPerformanceCounter() - stageStart;
+
+			// SDL_UpdateTexture has copied the CPU framebuffer into the SDL
+			// texture. The core may now safely render its next frame while the
+			// renderer draws and presents this already-uploaded texture.
+			mCoreSyncWaitFrameEnd(&context->impl->sync);
 			stageStart = SDL_GetPerformanceCounter();
 
 			SDL_Rect dest;
@@ -593,13 +606,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				SDL_Log("First Android game frame copied and presented; core frame=%u", renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0);
 			}
 
-			stageStart = SDL_GetPerformanceCounter();
-			mSDLAndroidApplyPendingPeerState();
-			mSDLAndroidUpdateCoopMailbox(renderer->core);
-			coopTicks += SDL_GetPerformanceCounter() - stageStart;
 		}
-		mCoreSyncWaitFrameEnd(&context->impl->sync);
-	}
 	if (!firstFrameLogged) {
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android video loop exited before presenting its first frame (active=%d, crashed=%d)",
 			mCoreThreadIsActive(context), mCoreThreadHasCrashed(context));
