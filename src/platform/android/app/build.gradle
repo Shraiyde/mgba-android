@@ -23,8 +23,8 @@ android {
 		applicationId 'com.gitsnup.mgbaandroid'
 		minSdk 21
 		targetSdk 34
-		versionCode (project.findProperty('APP_VERSION_CODE') ?: '1').toInteger()
-		versionName (project.findProperty('MGBA_VERSION') ?: '0.1.0')
+		versionCode = (project.findProperty('APP_VERSION_CODE') ?: System.getenv('APP_VERSION_CODE') ?: '1').toString().toInteger()
+		versionName = (project.findProperty('MGBA_VERSION') ?: '0.1.0').toString()
 
 		externalNativeBuild {
 			cmake {
