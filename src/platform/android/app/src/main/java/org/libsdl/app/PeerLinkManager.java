@@ -1147,6 +1147,7 @@ public final class PeerLinkManager {
         // Invalidate queued sends before the nonce counter is reset.
         accepted = false;
         sessionKey = null;
+        updateNativeConnection();
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
         peerConnection = null;
