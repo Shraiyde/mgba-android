@@ -25,7 +25,23 @@ enum mPeerMessageType {
 	mPEER_MSG_CHAT = 22,
 	mPEER_MSG_SIO_MULTI = 23,
 	mPEER_MSG_WORLD_CONFIG = 26,
-	mPEER_MSG_WORLD_CONFIG_ACK = 27
+	mPEER_MSG_WORLD_CONFIG_ACK = 27,
+	mPEER_MSG_SIO_RESYNC = 28
+};
+
+/* A live exchange gives the other phone a few GBA frames to answer. The
+ * core thread does not wait. Eight frames is long enough for a short broker
+ * round trip and short enough that a lost word cannot stall the game. */
+#define MPEER_SIO_TIMEOUT_NS (8ULL * 16744614ULL)
+/* Map loads clear the SIO-active flag. Hold an unsent or unanswered word
+ * until the game publishes the flag again, then give up so busy cannot stick. */
+#define MPEER_SIO_HOLD_NS (2ULL * 1000000000ULL)
+
+enum mPeerSioResult {
+	mPEER_SIO_WAIT = 0,
+	mPEER_SIO_READY = 1,
+	mPEER_SIO_RESET = 2,
+	mPEER_SIO_OFFLINE = 3
 };
 
 enum mPeerEventType {
@@ -56,7 +72,15 @@ bool mPeerLinkJoin(struct mPeerLink* link, const char* address, uint16_t port, c
 bool mPeerLinkSend(struct mPeerLink* link, uint16_t type, const void* data, uint32_t size);
 bool mPeerLinkPoll(struct mPeerLink* link, struct mPeerEvent* event);
 bool mPeerLinkIsConnected(struct mPeerLink* link);
+/* Non-blocking. Returns true only when the peer word is already queued. */
 bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t* remoteValue);
+/* Master side. seq is 0 until this side has actually transmitted its word.
+ * startNs is CLOCK_MONOTONIC from the moment the GBA transfer began. */
+enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue, uint32_t* seq, uint64_t startNs, uint16_t* remoteValue);
+/* Slave side. Pops the next in-order word, or resets both queues on a gap. */
+enum mPeerSioResult mPeerLinkSioTake(struct mPeerLink* link, uint32_t* seq, uint16_t* remoteValue);
+bool mPeerLinkSioReply(struct mPeerLink* link, uint32_t seq, uint16_t localValue);
+uint32_t mPeerLinkEpoch(const struct mPeerLink* link);
 void mPeerLinkStop(struct mPeerLink* link);
 void mPeerLinkUseJavaTransport(struct mPeerLink* link, bool enabled);
 void mPeerLinkSetConnected(struct mPeerLink* link, bool connected);
