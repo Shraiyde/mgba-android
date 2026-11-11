@@ -64,6 +64,10 @@ static char sAndroidLoadStatus[96] = "LOAD: not attempted";
 static char sAndroidLastError[192] = "ERROR: none";
 static int sAndroidSwapIntervalSet = -1;
 static int sAndroidSwapInterval = -1;
+static void* sFrameUploadBuffer;
+static size_t sFrameUploadBytes;
+static int sAudioOpenedFreq;
+static int sAudioOpenedFrames;
 
 static bool mSDLAndroidFrameIsBlack(const struct mSDLRenderer* renderer) {
 	if (!renderer || !renderer->outputBuffer || renderer->outputStride < (int) renderer->width)
@@ -402,6 +406,10 @@ static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
 	unsigned width, height;
 	bool softwareRenderer = false;
 	renderer->core->baseVideoSize(renderer->core, &width, &height);
+	// Prefer the GLES renderer. The software fallback scales a full-screen
+	// framebuffer on the CPU and cannot hold 60 fps on a phone.
+	SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
+	SDL_SetHint(SDL_HINT_RENDER_BATCHING, "1");
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 	renderer->window = SDL_CreateWindow("mGBA", renderer->viewportWidth, renderer->viewportHeight, SDL_WINDOW_FULLSCREEN * renderer->player.fullscreen);
 	renderer->sdlRenderer = SDL_CreateRenderer(renderer->window, NULL);
@@ -480,10 +488,19 @@ create_android_game_texture:
 	}
 	renderer->core->setVideoBuffer(renderer->core, renderer->outputBuffer, renderer->outputStride);
 	renderer->videoBufferAttached = true;
+	sFrameUploadBytes = (size_t) renderer->width * renderer->height * BYTES_PER_PIXEL;
+	sFrameUploadBuffer = malloc(sFrameUploadBytes);
+	if (!sFrameUploadBuffer) {
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not allocate Android frame upload buffer");
+		return false;
+	}
 	return true;
 }
 
 static void mSDLAndroidSWDeinit(struct mSDLRenderer* renderer) {
+	free(sFrameUploadBuffer);
+	sFrameUploadBuffer = NULL;
+	sFrameUploadBytes = 0;
 	free(renderer->outputBuffer);
 	renderer->outputBuffer = NULL;
 	renderer->outputStride = 0;
@@ -551,6 +568,9 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 		}
 
 		{
+			bool reportDiagnostics = false;
+			double coreFps = 0, drawFps = 0, waitMs = 0, uploadMs = 0, drawMs = 0, presentMs = 0, coopMs = 0;
+			bool active = false, crashed = false;
 			safeFrameCount = renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0;
 			Uint32 now = SDL_GetTicks();
 			if ((Uint32)(now - lastDiagnostics) >= 500) {
@@ -558,23 +578,20 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				Uint64 coreDelta = safeFrameCount >= lastCoreFrames ? safeFrameCount - lastCoreFrames : 0;
 				Uint64 drawDelta = presentedFrames - lastPresentedFrames;
 				double seconds = perfFrequency ? (double)(sampleNow - lastPerfSample) / (double)perfFrequency : 0.5;
-				double coreFps = seconds > 0 ? coreDelta / seconds : 0;
-				double drawFps = seconds > 0 ? drawDelta / seconds : 0;
-				double waitMs = perfFrequency ? (double)waitTicks * 1000.0 / perfFrequency / (coreDelta ? coreDelta : 1) : 0;
-				double uploadMs = perfFrequency ? (double)uploadTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
-				double drawMs = perfFrequency ? (double)drawTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
-				double presentMs = perfFrequency ? (double)presentTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
-				double coopMs = perfFrequency ? (double)coopTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
+				coreFps = seconds > 0 ? coreDelta / seconds : 0;
+				drawFps = seconds > 0 ? drawDelta / seconds : 0;
+				waitMs = perfFrequency ? (double)waitTicks * 1000.0 / perfFrequency / (coreDelta ? coreDelta : 1) : 0;
+				uploadMs = perfFrequency ? (double)uploadTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
+				drawMs = perfFrequency ? (double)drawTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
+				presentMs = perfFrequency ? (double)presentTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
+				coopMs = perfFrequency ? (double)coopTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
 				lastDiagnostics = now;
 				lastPerfSample = sampleNow;
 				lastCoreFrames = safeFrameCount;
 				lastPresentedFrames = presentedFrames;
-				bool active = mCoreThreadIsActive(context);
-				bool crashed = mCoreThreadHasCrashed(context);
-				mSDLAndroidUpdateDebugOverlay(renderer, safeFrameCount, latestFrameBlack, active, crashed, lastFramePresented,
-					coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, true);
-				SDL_Log("Android emulator heartbeat: frame=%u coreFPS=%.2f drawFPS=%.2f wait=%.3fms upload=%.3fms draw=%.3fms present=%.3fms coop=%.3fms active=%d crashed=%d black=%d",
-					safeFrameCount, coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, active, crashed, latestFrameBlack);
+				active = mCoreThreadIsActive(context);
+				crashed = mCoreThreadHasCrashed(context);
+				reportDiagnostics = true;
 				waitTicks = uploadTicks = drawTicks = presentTicks = coopTicks = 0;
 			}
 			waitTicks += SDL_GetPerformanceCounter() - stageStart;
@@ -587,22 +604,39 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			coopTicks += SDL_GetPerformanceCounter() - stageStart;
 
 			latestFrameBlack = mSDLAndroidFrameIsBlack(renderer);
+			if (sFrameUploadBuffer && renderer->outputBuffer && sFrameUploadBytes) {
+				size_t rowBytes = (size_t) renderer->outputStride * BYTES_PER_PIXEL;
+				size_t copyBytes = (size_t) renderer->width * BYTES_PER_PIXEL;
+				unsigned y;
+				const uint8_t* src = (const uint8_t*) renderer->outputBuffer;
+				uint8_t* dst = sFrameUploadBuffer;
+				for (y = 0; y < renderer->height; ++y) {
+					memcpy(dst, src, copyBytes);
+					src += rowBytes;
+					dst += copyBytes;
+				}
+			}
+
+			// The core can render the next frame as soon as the pixels are in
+			// the private upload buffer. SDL_UpdateTexture may wait on the GPU
+			// fence from the previous present; that wait stays on this thread.
+			mCoreSyncWaitFrameEnd(&context->impl->sync);
+			if (reportDiagnostics) {
+				mSDLAndroidUpdateDebugOverlay(renderer, safeFrameCount, latestFrameBlack, active, crashed, lastFramePresented,
+					coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, false);
+				SDL_Log("Android emulator heartbeat: frame=%u coreFPS=%.2f drawFPS=%.2f wait=%.3fms upload=%.3fms draw=%.3fms present=%.3fms coop=%.3fms audio=%dHz/%d active=%d crashed=%d black=%d",
+					safeFrameCount, coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, sAudioOpenedFreq, sAudioOpenedFrames, active, crashed, latestFrameBlack);
+			}
 			stageStart = SDL_GetPerformanceCounter();
-			if (SDL_UpdateTexture(renderer->sdlTex, NULL, renderer->outputBuffer,
-				renderer->outputStride * BYTES_PER_PIXEL) < 0) {
+			if (!sFrameUploadBuffer || SDL_UpdateTexture(renderer->sdlTex, NULL, sFrameUploadBuffer,
+				(int) renderer->width * BYTES_PER_PIXEL) < 0) {
 				snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: SDL_UpdateTexture: %.150s", SDL_GetError());
 				SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android framebuffer upload failed: %s", SDL_GetError());
 				lastFramePresented = false;
-				mCoreSyncWaitFrameEnd(&context->impl->sync);
 				mCoreThreadEnd(context);
 				break;
 			}
 			uploadTicks += SDL_GetPerformanceCounter() - stageStart;
-
-			// SDL_UpdateTexture has copied the CPU framebuffer into the SDL
-			// texture. The core may now safely render its next frame while the
-			// renderer draws and presents this already-uploaded texture.
-			mCoreSyncWaitFrameEnd(&context->impl->sync);
 			stageStart = SDL_GetPerformanceCounter();
 
 			SDL_Rect dest;
@@ -773,6 +807,10 @@ int main(int argc, char** argv) {
 	mArgumentsApply(&args, &subparser, 1, &renderer.core->config);
 
 	mCoreConfigSetDefaultIntValue(&renderer.core->config, "logToStdout", true);
+	// Upstream frontends default to detecting idle loops. A co-op ROM rebuild
+	// does not keep the stock Pokémon idle-loop address, so removal never
+	// engages unless detection is allowed to find the new one.
+	mCoreConfigSetDefaultValue(&renderer.core->config, "idleOptimization", "detect");
 	// Diagnostic A/B build: use the core's direct video renderer to isolate
 	// the threaded scanline proxy from Android frame pacing.
 	mCoreConfigSetDefaultValue(&renderer.core->config, "threadedVideo", "0");
@@ -962,7 +1000,10 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	mArgumentsApplyFileLoads(args, renderer->core);
 
 	renderer->audio.samples = renderer->core->opts.audioBuffers;
-	renderer->audio.sampleRate = 44100;
+	// Phones run the audio HAL at 48000 Hz. Asking for 44100 makes AAudio
+	// reopen at 48000 or makes AudioTrack negotiate a different period than
+	// the resampler is pacing.
+	renderer->audio.sampleRate = 48000;
 	thread.logger.logger = &_logger.d;
 
 	bool didFail = !mCoreThreadStart(&thread);
@@ -978,6 +1019,11 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		mSDLSetScreensaverSuspendable(&renderer->events, renderer->core->opts.suspendScreensaver);
 		mSDLSuspendScreensaver(&renderer->events);
 		renderer->audioInitialized = mSDLInitAudio(&renderer->audio, &thread);
+		sAudioOpenedFreq = renderer->audio.obtainedSpec.freq;
+		sAudioOpenedFrames = renderer->audio.obtainedSpec.samples;
+		SDL_Log("Android audio device: requested=%uHz/%u frames, opened=%dHz/%d frames, channels=%u",
+			renderer->audio.sampleRate, (unsigned) renderer->audio.samples, sAudioOpenedFreq, sAudioOpenedFrames,
+			renderer->audio.obtainedSpec.channels);
 		if (!renderer->audioInitialized) {
 			// No consumer exists, so leave audio sync disabled. Video and
 			// emulation must continue independently of audio device failures.

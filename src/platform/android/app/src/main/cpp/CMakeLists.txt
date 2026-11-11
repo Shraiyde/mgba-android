@@ -3,9 +3,11 @@ project(mgba-android LANGUAGES C CXX)
 
 # The CI produces an installable debug APK, but Android Gradle otherwise
 # compiles its native targets with Debug's unoptimized -O0 defaults. mGBA's
-# CPU/video/audio hot paths are too expensive at -O0 on a phone. Keep debug
-# symbols and assertions, but optimize native code in every APK variant.
-add_compile_options(-O2)
+# CPU/video/audio hot paths are too expensive at -O0 on a phone. These options
+# are applied after the Debug config flags, so -O3 wins over -O0. NDEBUG
+# compiles assert() out of the interpreter without turning off mGBA's own
+# mASSERT checks.
+add_compile_options(-O3 -DNDEBUG)
 
 set(MGBA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../..)
 set(SDL2_SRC "" CACHE PATH "Path to the SDL2 source tree")
@@ -18,7 +20,7 @@ add_subdirectory(${MGBA_ROOT} mgba)
 
 # The mGBA target sets its own compile properties; apply optimization
 # directly so the emulator core is not left at the Android Debug default.
-target_compile_options(mgba PRIVATE -O2)
+target_compile_options(mgba PRIVATE -O3 -DNDEBUG)
 if(ANDROID)
 	# Android's 64-bit off_t is already supported by fopen/ftello/fseeko.
 	# Force minizip's portable stdio path instead of unavailable *64 symbols.
@@ -43,7 +45,7 @@ add_library(main SHARED
 	${MGBA_ROOT}/src/platform/sdl/sdl-events.c
 	${MGBA_ROOT}/src/platform/sdl/sw-sdl2.c)
 
-target_compile_options(main PRIVATE -O2)
+target_compile_options(main PRIVATE -O3 -DNDEBUG)
 
 # The SDL frontend sources must be compiled with the same feature/function
 # detection defines as the core (ENABLE_DIRECTORIES, HAVE_LOCALE_T, ...).

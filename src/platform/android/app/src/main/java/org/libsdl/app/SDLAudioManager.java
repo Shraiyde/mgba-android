@@ -211,23 +211,27 @@ public class SDLAudioManager {
         }
         frameSize = (sampleSize * desiredChannels);
 
-        // Let the user pick a larger buffer if they really want -- but ye
-        // gods they probably shouldn't, the minimums are horrifyingly high
-        // latency already
+        // AudioTrack/AudioRecord reject a buffer smaller than the HAL minimum,
+        // but that minimum is often several times the period the emulator
+        // asked for. Keep the callback at the requested period and only
+        // enlarge the track itself. Reporting the enlarged size back to SDL
+        // makes every callback longer than the samples mGBA queued, so the
+        // rest is silence and the core waits out the full period.
         int minBufferSize;
         if (isCapture) {
             minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat);
         } else {
             minBufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
         }
-        desiredFrames = Math.max(desiredFrames, (minBufferSize + frameSize - 1) / frameSize);
+        int minFrames = minBufferSize > 0 ? (minBufferSize + frameSize - 1) / frameSize : desiredFrames;
+        int trackFrames = Math.max(desiredFrames, minFrames);
 
         int[] results = new int[4];
 
         if (isCapture) {
             if (mAudioRecord == null) {
                 mAudioRecord = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, sampleRate,
-                        channelConfig, audioFormat, desiredFrames * frameSize);
+                        channelConfig, audioFormat, trackFrames * frameSize);
 
                 // see notes about AudioTrack state in audioOpen(), above. Probably also applies here.
                 if (mAudioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
@@ -250,7 +254,7 @@ public class SDLAudioManager {
 
         } else {
             if (mAudioTrack == null) {
-                mAudioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig, audioFormat, desiredFrames * frameSize, AudioTrack.MODE_STREAM);
+                mAudioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig, audioFormat, trackFrames * frameSize, AudioTrack.MODE_STREAM);
 
                 // Instantiating AudioTrack can "succeed" without an exception and the track may still be invalid
                 // Ref: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/master/media/java/android/media/AudioTrack.java
@@ -277,7 +281,7 @@ public class SDLAudioManager {
         }
         results[3] = desiredFrames;
 
-        Log.v(TAG, "Opening " + (isCapture ? "capture" : "playback") + ", got " + results[3] + " frames of " + results[2] + " channel " + getAudioFormatString(results[1]) + " audio at " + results[0] + " Hz");
+        Log.v(TAG, "Opening " + (isCapture ? "capture" : "playback") + ", callback " + results[3] + " frames, track " + trackFrames + " frames, " + results[2] + " channel " + getAudioFormatString(results[1]) + " audio at " + results[0] + " Hz");
 
         return results;
     }

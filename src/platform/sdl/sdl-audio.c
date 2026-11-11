@@ -72,7 +72,13 @@ bool mSDLInitAudio(struct mSDLAudio* context, struct mCoreThread* threadContext)
 		return false;
 	}
 
-	mAudioBufferInit(&context->buffer, context->samples, context->obtainedSpec.channels);
+	// Size the output ring to the buffer the device actually callbacks with.
+	// Android's AudioTrack backend raises this above the requested 1024 frames
+	// to satisfy AudioTrack.getMinBufferSize; filling only the request and
+	// zeroing the rest both drops out and stretches each callback to a
+	// fraction of realtime.
+	unsigned bufferFrames = context->obtainedSpec.samples ? context->obtainedSpec.samples : context->samples;
+	mAudioBufferInit(&context->buffer, bufferFrames, context->obtainedSpec.channels);
 	mAudioResamplerInit(&context->resampler, mINTERPOLATOR_SINC);
 	mAudioResamplerSetDestination(&context->resampler, &context->buffer, context->obtainedSpec.freq);
 
@@ -147,8 +153,16 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 			fauxClock = mCoreCalculateFramerateRatio(audioContext->core, audioContext->sync->fpsTarget);
 		}
 		mCoreSyncLockAudio(audioContext->sync);
-		audioContext->sync->audioHighWater = audioContext->samples + audioContext->resampler.highWaterMark + audioContext->resampler.lowWaterMark + (audioContext->samples >> 6);
-		audioContext->sync->audioHighWater *= sampleRate / (fauxClock * audioContext->obtainedSpec.freq);
+		// Pace the core to the callback the device is actually running, not
+		// the 1024-frame request. One full callback of real samples then
+		// takes the same wall time as the audio it contains.
+		unsigned deviceFrames = audioContext->obtainedSpec.samples ? audioContext->obtainedSpec.samples : audioContext->samples;
+		audioContext->sync->audioHighWater = deviceFrames + audioContext->resampler.highWaterMark + audioContext->resampler.lowWaterMark + (deviceFrames >> 6);
+		double deviceFreq = audioContext->obtainedSpec.freq ? (double) audioContext->obtainedSpec.freq : 1.0;
+		double inputPerOutput = (double) sampleRate / (fauxClock * deviceFreq);
+		if (inputPerOutput > 0.0) {
+			audioContext->sync->audioHighWater = (size_t) ((double) audioContext->sync->audioHighWater * inputPerOutput + 0.5);
+		}
 
 		if (audioContext->resampler.source) {
 			size_t destSize = mAudioBufferCapacity(audioContext->resampler.source);

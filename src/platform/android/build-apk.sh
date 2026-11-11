@@ -23,6 +23,10 @@ if [ ! -d "$SDL2_SRC" ]; then
 	exit 1
 fi
 
+# SDL 2.30's AAudio driver writes each callback with a 1 ms timeout and then
+# drops whatever the stream did not accept. Queue the whole buffer instead.
+python3 ./patch-sdl-aaudio.py "$SDL2_SRC"
+
 GRADLE_CMD=gradle
 if [ -x gradlew ]; then
 	GRADLE_CMD=./gradlew
