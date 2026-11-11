@@ -7,12 +7,22 @@
 
 #include <mgba/core/config.h>
 #include <mgba-util/audio-buffer.h>
+#ifdef USE_PTHREADS
+#include <sys/time.h>
+#else
 #include <time.h>
+#endif
 
 static uint64_t _syncNowNs(void) {
+#ifdef USE_PTHREADS
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (uint64_t) tv.tv_sec * 1000000000ULL + (uint64_t) tv.tv_usec * 1000ULL;
+#else
 	struct timespec ts;
 	timespec_get(&ts, TIME_UTC);
 	return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+#endif
 }
 
 static const float _defaultFPSTarget = 60.f;
