@@ -138,7 +138,7 @@ public final class PeerLinkManager {
     private final List<IceCandidate> pendingCandidates = Collections.synchronizedList(new ArrayList<>());
 
     private synchronized void resetReceiveCounters() {
-        resetReceiveCounters();
+        receiveCounters[0] = receiveCounters[1] = 0;
     }
 
     private volatile MqttAsyncClient mqtt;
