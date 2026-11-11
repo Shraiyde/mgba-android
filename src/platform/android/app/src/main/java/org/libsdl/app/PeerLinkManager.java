@@ -436,6 +436,7 @@ public final class PeerLinkManager {
                         pcPeerPublicKey = null;
                         sendCounter.set(1);
                         resetReceiveCounters();
+                        ecdhKeyPair = null;
                         try {
                             // A broker reconnect starts a fresh ECDH exchange.
                             // Never restart a GCM counter under the previous key.
@@ -634,7 +635,7 @@ public final class PeerLinkManager {
             // QoS 1 MQTT delivery may duplicate a control packet. Re-deriving
             // the same key and resetting the GCM counter would reuse nonces.
             if (accepted && sessionKey != null && peerId.equals(pcPeerId)
-                && peerPublicKey.equals(pcPeerPublicKey) && host == assignedHost)
+                && peerPublicKey.equals(pcPeerPublicKey))
                 return;
             byte[] shared = deriveSharedSecret(ecdhKeyPair, peerPublicKey);
             sessionKey = deriveSessionKey(shared, pinKey, sessionId);
