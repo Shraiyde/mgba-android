@@ -7,6 +7,13 @@
 
 #include <mgba/core/config.h>
 #include <mgba-util/audio-buffer.h>
+#include <time.h>
+
+static uint64_t _syncNowNs(void) {
+	struct timespec ts;
+	timespec_get(&ts, TIME_UTC);
+	return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+}
 
 static const float _defaultFPSTarget = 60.f;
 
@@ -36,15 +43,21 @@ void mCoreSyncPostFrame(struct mCoreSync* sync) {
 		return;
 	}
 
+	uint64_t waitStart = _syncNowNs();
+	bool waited = false;
 	MutexLock(&sync->videoFrameMutex);
 	++sync->videoPostCount;
 	++sync->videoFramePending;
 	do {
 		ConditionWake(&sync->videoFrameAvailableCond);
 		if (sync->videoFrameWait) {
+			waited = true;
 			ConditionWait(&sync->videoFrameRequiredCond, &sync->videoFrameMutex);
 		}
 	} while (sync->videoFrameWait && sync->videoFramePending);
+	if (waited) {
+		sync->videoPostWaitNs += _syncNowNs() - waitStart;
+	}
 	MutexUnlock(&sync->videoFrameMutex);
 }
 
@@ -109,10 +122,20 @@ bool mCoreSyncProduceAudio(struct mCoreSync* sync, const struct mAudioBuffer* bu
 
 	size_t produced = mAudioBufferCapacity(buf);
 	size_t producedNew = mAudioBufferAvailable(buf);
+	uint64_t waitStart = 0;
+	bool waited = false;
 	while (sync->audioWait && sync->audioHighWater && producedNew >= sync->audioHighWater) {
+		if (!waited) {
+			waitStart = _syncNowNs();
+			waited = true;
+		}
 		ConditionWait(&sync->audioRequiredCond, &sync->audioBufferMutex);
 		produced = producedNew;
 		producedNew = mAudioBufferAvailable(buf);
+	}
+	if (waited) {
+		sync->audioWaitNs += _syncNowNs() - waitStart;
+		++sync->audioWaitCount;
 	}
 	MutexUnlock(&sync->audioBufferMutex);
 	return producedNew != produced;
