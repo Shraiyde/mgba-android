@@ -651,7 +651,20 @@ static void mSDLDeinit(struct mSDLRenderer* renderer) {
 		mSDLDeinitAudio(&renderer->audio);
 		renderer->audioInitialized = false;
 	}
-	SDL_DestroyWindow(renderer->window);
+	// SDL renderer resources must be released before their owning window.
+	// Keep the core framebuffer alive until the renderer-specific deinit runs.
+	if (renderer->sdlTex) {
+		SDL_DestroyTexture(renderer->sdlTex);
+		renderer->sdlTex = NULL;
+	}
+	if (renderer->sdlRenderer) {
+		SDL_DestroyRenderer(renderer->sdlRenderer);
+		renderer->sdlRenderer = NULL;
+	}
+	if (renderer->window) {
+		SDL_DestroyWindow(renderer->window);
+		renderer->window = NULL;
+	}
 	renderer->deinit(renderer);
 	SDL_Quit();
 }
