@@ -4,6 +4,7 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+#define _POSIX_C_SOURCE 200809L
 #include "main.h"
 
 #include "android-ui.h"
@@ -31,6 +32,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/stat.h>
 
@@ -91,14 +93,20 @@ static bool mSDLAndroidFrameIsBlack(const struct mSDLRenderer* renderer) {
 	return true;
 }
 
-static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigned frames, bool frameBlack, bool threadActive, bool threadCrashed, bool presented, double coreFps, double drawFps, double waitMs, double uploadMs, double drawMs, double presentMs, double coopMs, bool frameMutexHeld) {
+static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigned frames, bool frameBlack, bool threadActive, bool threadCrashed, bool presented, double coreFps, double drawFps, double showFps, double waitMs, double uploadMs, double drawMs, double presentMs, double coopMs, bool frameMutexHeld) {
 	char frameStatus[192];
 	char threadStatus[96];
 	char videoStatus[192];
+	char paceStatus[192];
 	struct GBA* gba = renderer && renderer->core ? (struct GBA*) renderer->core->board : NULL;
 	struct ARMCore* cpu = renderer && renderer->core ? renderer->core->cpu : NULL;
-	snprintf(frameStatus, sizeof(frameStatus), "FPS CORE:%.1f DRAW:%.1f | BLACK:%s",
-		coreFps, drawFps, frames ? (frameBlack ? "YES" : "NO") : "WAITING");
+	unsigned underruns = 0;
+	if (renderer)
+		underruns = __atomic_load_n(&renderer->audio.underruns, __ATOMIC_RELAXED);
+	snprintf(frameStatus, sizeof(frameStatus), "FPS CORE:%.1f DISTINCT:%.1f DRAW:%.1f | BLACK:%s",
+		coreFps, showFps, drawFps, frames ? (frameBlack ? "YES" : "NO") : "WAITING");
+	snprintf(paceStatus, sizeof(paceStatus), "PRESENTED:%.1f FPS  UNDERRUNS:%u  AUDIO:%dHz/%d",
+		showFps, underruns, sAudioOpenedFreq, sAudioOpenedFrames);
 	snprintf(threadStatus, sizeof(threadStatus), "EMULATION THREAD: %s",
 		threadCrashed ? "CRASHED" : (threadActive ? "RUNNING" : "STOPPED"));
 	if (gba && cpu && gba->sync) {
@@ -167,14 +175,14 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 			presented ? "PRESENTED" : "NOT PRESENTED");
 	}
 	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, frameStatus,
-		threadStatus, videoStatus, sAndroidLastError);
+		threadStatus, videoStatus, paceStatus, sAndroidLastError);
 }
 static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* error, bool threadCrashed) {
 	if (error && error[0])
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: %.180s", error);
 	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, "FRAMES: stopped",
 		threadCrashed ? "EMULATION THREAD: CRASHED" : "EMULATION THREAD: STOPPED",
-		"VIDEO: stopped", sAndroidLastError);
+		"VIDEO: stopped", "PRESENTED: stopped", sAndroidLastError);
 	bool dismissed = false;
 	while (!dismissed) {
 		SDL_Event event;
@@ -507,6 +515,40 @@ static void mSDLAndroidSWDeinit(struct mSDLRenderer* renderer) {
 	renderer->videoBufferAttached = false;
 }
 
+// 280896 master cycles / 16777216 Hz.
+static const uint64_t kGbaFrameNs = 16744614ULL;
+
+static uint32_t mSDLAndroidHashFrame(const uint8_t* pixels, size_t size) {
+	uint32_t hash = 2166136261u;
+	size_t i;
+	for (i = 0; i < size; i += 16) {
+		hash ^= pixels[i];
+		hash *= 16777619u;
+	}
+	return hash;
+}
+
+static void mSDLAndroidPaceFrame(struct timespec* nextFrame) {
+	struct timespec now;
+	uint64_t nowNs;
+	uint64_t nextNs;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	nowNs = (uint64_t) now.tv_sec * 1000000000ULL + (uint64_t) now.tv_nsec;
+	nextNs = (uint64_t) nextFrame->tv_sec * 1000000000ULL + (uint64_t) nextFrame->tv_nsec;
+	if (nextNs > nowNs + kGbaFrameNs)
+		nextNs = nowNs;
+	if (nextNs > nowNs) {
+		struct timespec abs;
+		abs.tv_sec = (time_t) (nextNs / 1000000000ULL);
+		abs.tv_nsec = (long) (nextNs % 1000000000ULL);
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &abs, NULL);
+		nowNs = nextNs;
+	}
+	nextNs += kGbaFrameNs;
+	nextFrame->tv_sec = (time_t) (nextNs / 1000000000ULL);
+	nextFrame->tv_nsec = (long) (nextNs % 1000000000ULL);
+}
+
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	struct mCoreThread* context = user;
 	SDL_Event event;
@@ -520,7 +562,12 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	Uint64 waitTicks = 0, uploadTicks = 0, drawTicks = 0, presentTicks = 0, coopTicks = 0;
 	Uint64 lastCoreFrames = 0;
 	Uint64 presentedFrames = 0, lastPresentedFrames = 0;
+	Uint64 distinctFrames = 0, lastDistinctFrames = 0;
+	uint32_t lastFrameHash = 0;
+	bool haveFrameHash = false;
+	struct timespec nextFrame;
 	unsigned safeFrameCount = 0;
+	clock_gettime(CLOCK_MONOTONIC, &nextFrame);
 
 	SDL_RendererInfo startupInfo;
 	if (SDL_GetRendererInfo(renderer->sdlRenderer, &startupInfo) == 0)
@@ -528,6 +575,9 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	SDL_Log("Android video loop entered: window=%p renderer=%p texture=%p size=%ux%u output=%p",
 		renderer->window, renderer->sdlRenderer, renderer->sdlTex, renderer->width, renderer->height, renderer->outputBuffer);
 	while (mCoreThreadIsActive(context)) {
+		// One presented GBA frame per 59.7275 Hz slot. Audio no longer clocks
+		// the core; this wait is what keeps a fast core from running ahead.
+		mSDLAndroidPaceFrame(&nextFrame);
 		while (SDL_PollEvent(&event)) {
 			mAndroidOverlayHandleEvent(&event);
 			mSDLHandleEvent(context, &renderer->player, &event);
@@ -569,7 +619,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 
 		{
 			bool reportDiagnostics = false;
-			double coreFps = 0, drawFps = 0, waitMs = 0, uploadMs = 0, drawMs = 0, presentMs = 0, coopMs = 0;
+			double coreFps = 0, drawFps = 0, showFps = 0, waitMs = 0, uploadMs = 0, drawMs = 0, presentMs = 0, coopMs = 0;
 			bool active = false, crashed = false;
 			safeFrameCount = renderer->core->frameCounter ? renderer->core->frameCounter(renderer->core) : 0;
 			Uint32 now = SDL_GetTicks();
@@ -577,9 +627,11 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				Uint64 sampleNow = SDL_GetPerformanceCounter();
 				Uint64 coreDelta = safeFrameCount >= lastCoreFrames ? safeFrameCount - lastCoreFrames : 0;
 				Uint64 drawDelta = presentedFrames - lastPresentedFrames;
+				Uint64 showDelta = distinctFrames - lastDistinctFrames;
 				double seconds = perfFrequency ? (double)(sampleNow - lastPerfSample) / (double)perfFrequency : 0.5;
 				coreFps = seconds > 0 ? coreDelta / seconds : 0;
 				drawFps = seconds > 0 ? drawDelta / seconds : 0;
+				showFps = seconds > 0 ? showDelta / seconds : 0;
 				waitMs = perfFrequency ? (double)waitTicks * 1000.0 / perfFrequency / (coreDelta ? coreDelta : 1) : 0;
 				uploadMs = perfFrequency ? (double)uploadTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
 				drawMs = perfFrequency ? (double)drawTicks * 1000.0 / perfFrequency / (drawDelta ? drawDelta : 1) : 0;
@@ -589,6 +641,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 				lastPerfSample = sampleNow;
 				lastCoreFrames = safeFrameCount;
 				lastPresentedFrames = presentedFrames;
+				lastDistinctFrames = distinctFrames;
 				active = mCoreThreadIsActive(context);
 				crashed = mCoreThreadHasCrashed(context);
 				reportDiagnostics = true;
@@ -607,14 +660,21 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			if (sFrameUploadBuffer && renderer->outputBuffer && sFrameUploadBytes) {
 				size_t rowBytes = (size_t) renderer->outputStride * BYTES_PER_PIXEL;
 				size_t copyBytes = (size_t) renderer->width * BYTES_PER_PIXEL;
+				size_t frameBytes = copyBytes * renderer->height;
 				unsigned y;
 				const uint8_t* src = (const uint8_t*) renderer->outputBuffer;
 				uint8_t* dst = sFrameUploadBuffer;
+				uint32_t hash;
 				for (y = 0; y < renderer->height; ++y) {
 					memcpy(dst, src, copyBytes);
 					src += rowBytes;
 					dst += copyBytes;
 				}
+				hash = mSDLAndroidHashFrame(sFrameUploadBuffer, frameBytes);
+				if (!haveFrameHash || hash != lastFrameHash)
+					++distinctFrames;
+				lastFrameHash = hash;
+				haveFrameHash = true;
 			}
 
 			// The core can render the next frame as soon as the pixels are in
@@ -623,9 +683,10 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			mCoreSyncWaitFrameEnd(&context->impl->sync);
 			if (reportDiagnostics) {
 				mSDLAndroidUpdateDebugOverlay(renderer, safeFrameCount, latestFrameBlack, active, crashed, lastFramePresented,
-					coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, false);
-				SDL_Log("Android emulator heartbeat: frame=%u coreFPS=%.2f drawFPS=%.2f wait=%.3fms upload=%.3fms draw=%.3fms present=%.3fms coop=%.3fms audio=%dHz/%d active=%d crashed=%d black=%d",
-					safeFrameCount, coreFps, drawFps, waitMs, uploadMs, drawMs, presentMs, coopMs, sAudioOpenedFreq, sAudioOpenedFrames, active, crashed, latestFrameBlack);
+					coreFps, drawFps, showFps, waitMs, uploadMs, drawMs, presentMs, coopMs, false);
+				SDL_Log("Android emulator heartbeat: frame=%u coreFPS=%.2f drawFPS=%.2f distinctFPS=%.2f wait=%.3fms upload=%.3fms draw=%.3fms present=%.3fms coop=%.3fms audio=%dHz/%d underruns=%u active=%d crashed=%d black=%d",
+					safeFrameCount, coreFps, drawFps, showFps, waitMs, uploadMs, drawMs, presentMs, coopMs, sAudioOpenedFreq, sAudioOpenedFrames,
+					__atomic_load_n(&renderer->audio.underruns, __ATOMIC_RELAXED), active, crashed, latestFrameBlack);
 			}
 			stageStart = SDL_GetPerformanceCounter();
 			if (!sFrameUploadBuffer || SDL_UpdateTexture(renderer->sdlTex, NULL, sFrameUploadBuffer,
@@ -912,7 +973,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	// LOAD ROM control. A cancelled picker simply returns to this idle screen.
 	mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus,
 		"FRAMES: no game loaded", "EMULATION THREAD: waiting",
-		"VIDEO: renderer ready", sAndroidLastError);
+		"VIDEO: renderer ready", "PRESENTED: waiting", sAndroidLastError);
 	while (!args->fname) {
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
@@ -948,7 +1009,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: IN PROGRESS");
 		snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
 		mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, "FRAMES: waiting",
-			"EMULATION THREAD: not started", "VIDEO: checking attachment", sAndroidLastError);
+			"EMULATION THREAD: not started", "VIDEO: checking attachment", "PRESENTED: waiting", sAndroidLastError);
 		SDL_Log("Loading ROM: %s", args->fname ? args->fname : "(null)");
 		if (mCoreLoadFile(renderer->core, args->fname)) {
 			snprintf(sAndroidLoadStatus, sizeof(sAndroidLoadStatus), "LOAD: SUCCESS");
@@ -960,7 +1021,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 		free(args->fname);
 		args->fname = NULL;
 		mAndroidOverlaySetDebugStatus(sAndroidRomStatus, sAndroidLoadStatus, "FRAMES: waiting",
-			"EMULATION THREAD: not started", "VIDEO: ready for ROM", sAndroidLastError);
+			"EMULATION THREAD: not started", "VIDEO: ready for ROM", "PRESENTED: waiting", sAndroidLastError);
 		while (!args->fname) {
 			SDL_Event event;
 			while (SDL_PollEvent(&event)) {
@@ -1031,13 +1092,18 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: AUDIO UNAVAILABLE - VIDEO-ONLY FALLBACK");
 			SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Audio initialization failed; continuing video without audio: %s", SDL_GetError());
 		} else {
-			// The SDL callback is now running and can drain the core buffer.
-			// Turn synchronization on only after that consumer is available.
+			// The phone measurement was about 1.5 ms of core CPU per frame and
+			// about 30 ms blocked in audio sync, with video wait near zero.
+			// That device period is not one GBA frame, so audio sync held the
+			// game at ~33 fps and the callback padded the rest with silence.
+			// The renderer clock below keeps emulation at 60 fps. The callback
+			// resamples whatever is buffered and counts an underrun when it
+			// has to pad.
 			MutexLock(&thread.impl->sync.audioBufferMutex);
-			thread.impl->sync.audioWait = true;
+			thread.impl->sync.audioWait = false;
 			ConditionWake(&thread.impl->sync.audioRequiredCond);
 			MutexUnlock(&thread.impl->sync.audioBufferMutex);
-			renderer->core->opts.audioSync = true;
+			renderer->core->opts.audioSync = false;
 			snprintf(sAndroidLastError, sizeof(sAndroidLastError), "ERROR: none");
 		}
 		renderer->runloop(renderer, &thread);

@@ -3,10 +3,13 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+#define _POSIX_C_SOURCE 200809L
 #include "sdl-audio.h"
 
 #include <mgba/core/core.h>
 #include <mgba/core/thread.h>
+
+#include <time.h>
 
 mLOG_DEFINE_CATEGORY(SDL_AUDIO, "SDL Audio", "platform.sdl.audio");
 
@@ -78,6 +81,9 @@ bool mSDLInitAudio(struct mSDLAudio* context, struct mCoreThread* threadContext)
 	// zeroing the rest both drops out and stretches each callback to a
 	// fraction of realtime.
 	unsigned bufferFrames = context->obtainedSpec.samples ? context->obtainedSpec.samples : context->samples;
+	context->nextCallbackNs = 0;
+	context->underruns = 0;
+	context->underrunFrames = 0;
 	mAudioBufferInit(&context->buffer, bufferFrames, context->obtainedSpec.channels);
 	mAudioResamplerInit(&context->resampler, mINTERPOLATOR_SINC);
 	mAudioResamplerSetDestination(&context->resampler, &context->buffer, context->obtainedSpec.freq);
@@ -130,6 +136,29 @@ void mSDLResumeAudio(struct mSDLAudio* context) {
 #endif
 }
 
+static void _mSDLPaceCallback(struct mSDLAudio* audioContext) {
+	unsigned frames = audioContext->obtainedSpec.samples ? audioContext->obtainedSpec.samples : (unsigned) audioContext->samples;
+	unsigned freq = audioContext->obtainedSpec.freq ? (unsigned) audioContext->obtainedSpec.freq : audioContext->sampleRate;
+	struct timespec now;
+	uint64_t nowNs;
+	uint64_t periodNs;
+	if (!frames || !freq)
+		return;
+	// One callback's worth of audio. If the driver already blocked in its
+	// write, this deadline is in the past and we do not sleep again.
+	periodNs = (uint64_t) frames * 1000000000ull / freq;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	nowNs = (uint64_t) now.tv_sec * 1000000000ull + (uint64_t) now.tv_nsec;
+	if (audioContext->nextCallbackNs > nowNs) {
+		struct timespec abs;
+		abs.tv_sec = (time_t) (audioContext->nextCallbackNs / 1000000000ull);
+		abs.tv_nsec = (long) (audioContext->nextCallbackNs % 1000000000ull);
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &abs, NULL);
+		nowNs = audioContext->nextCallbackNs;
+	}
+	audioContext->nextCallbackNs = nowNs + periodNs;
+}
+
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 static void _mSDLAudioCallback(void* context, SDL_AudioStream* stream, int additionalLen, int len) {
 	UNUSED(additionalLen);
@@ -145,6 +174,9 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 		return;
 #endif
 	}
+	// Pace before touching the core. A driver that queues without blocking
+	// would otherwise run this callback in a burst and pad the rest with silence.
+	_mSDLPaceCallback(audioContext);
 	struct mAudioBuffer* buffer = audioContext->core->getAudioBuffer(audioContext->core);
 	unsigned sampleRate = audioContext->core->audioSampleRate(audioContext->core);
 	double fauxClock = 1;
@@ -191,10 +223,13 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 		len -= available;
 	}
 #else
-	len /= 2 * audioContext->obtainedSpec.channels;
+	if (audioContext->obtainedSpec.channels)
+		len /= 2 * audioContext->obtainedSpec.channels;
 	int available = mAudioBufferRead(&audioContext->buffer, (int16_t*) data, len);
 
 	if (available < len) {
+		__atomic_fetch_add(&audioContext->underruns, 1u, __ATOMIC_RELAXED);
+		__atomic_fetch_add(&audioContext->underrunFrames, (unsigned) (len - available), __ATOMIC_RELAXED);
 		memset(((short*) data) + audioContext->obtainedSpec.channels * available, 0, (len - available) * audioContext->obtainedSpec.channels * sizeof(short));
 	}
 #endif

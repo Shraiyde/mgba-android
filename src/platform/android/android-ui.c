@@ -281,18 +281,18 @@ static struct {
 } overlayCache;
 
  
-#define DEBUG_LINE_COUNT 6
+#define DEBUG_LINE_COUNT 7
 static char debugLines[DEBUG_LINE_COUNT][192];
 static SDL_Surface* debugSurface;
 static SDL_Texture* debugTexture;
 static SDL_Renderer* debugRenderer;
 static int debugPanelWidth;
-static const int debugPanelHeight = 92;
+static const int debugPanelHeight = 108;
 static uint64_t debugGeneration;
 static uint64_t debugUploadedGeneration = UINT64_MAX;
 
-void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char* frames, const char* thread, const char* video, const char* error) {
-	const char* values[DEBUG_LINE_COUNT] = { rom, load, frames, thread, video, error };
+void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char* frames, const char* thread, const char* video, const char* pace, const char* error) {
+	const char* values[DEBUG_LINE_COUNT] = { rom, load, frames, thread, video, pace, error };
 	int i;
 	for (i = 0; i < DEBUG_LINE_COUNT; ++i)
 		snprintf(debugLines[i], sizeof(debugLines[i]), "%s", values[i] ? values[i] : "");

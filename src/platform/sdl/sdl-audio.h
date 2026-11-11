@@ -34,6 +34,11 @@ struct mSDLAudio {
 
 	struct mCore* core;
 	struct mCoreSync* sync;
+
+	// Callback thread writes these; the UI thread reads them.
+	uint64_t nextCallbackNs;
+	unsigned underruns;
+	unsigned underrunFrames;
 };
 
 struct mCoreThread;
