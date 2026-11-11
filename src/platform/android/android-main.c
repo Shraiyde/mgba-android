@@ -773,15 +773,14 @@ int main(int argc, char** argv) {
 	mArgumentsApply(&args, &subparser, 1, &renderer.core->config);
 
 	mCoreConfigSetDefaultIntValue(&renderer.core->config, "logToStdout", true);
-	// Run GBA scanline rendering on mGBA's worker thread so the ARM emulation
-	// thread can execute concurrently on multi-core Android devices.
-	mCoreConfigSetDefaultValue(&renderer.core->config, "threadedVideo", "1");
+	// Diagnostic A/B build: use the core's direct video renderer to isolate
+	// the threaded scanline proxy from Android frame pacing.
+	mCoreConfigSetDefaultValue(&renderer.core->config, "threadedVideo", "0");
 	mCoreConfigLoadDefaults(&renderer.core->config, &opts);
 	mCoreLoadConfig(renderer.core);
-	// This Android frontend depends on threaded scanline rendering to keep
-	// software video work off the ARM emulation thread. A persisted user config
-	// can override a default, so enforce the runtime setting after config load.
-	mCoreConfigSetValue(&renderer.core->config, "threadedVideo", "1");
+	// Override any persisted threaded-video preference for this diagnostic
+	// build. The core reads this setting when its emulation thread resets.
+	mCoreConfigSetValue(&renderer.core->config, "threadedVideo", "0");
 	mStandardLoggerInit(&_logger);
 	mStandardLoggerConfig(&_logger, &renderer.core->config);
 	mLogSetDefaultLogger(&_logger.d);
