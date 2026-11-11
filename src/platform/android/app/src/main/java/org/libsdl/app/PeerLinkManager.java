@@ -659,7 +659,7 @@ public final class PeerLinkManager {
             sendCounter.set(1);
             resetReceiveCounters();
             accepted = true;
-            updateNativeConnection();
+            reopenNativeSession();
             showStatus("Co-op connected", "Both phones are connected through your PC server.");
         } else if ("peer-disconnected".equals(type)) {
             accepted = false;
@@ -757,7 +757,7 @@ public final class PeerLinkManager {
         publishAcceptMessage();
         handler.postDelayed(acceptRetry, 2500);
 
-        updateNativeConnection();
+        reopenNativeSession();
         showStatus("Paired", "Connected. Establishing the direct phone-to-phone route…");
         createPeerConnection(true);
     }
@@ -775,7 +775,7 @@ public final class PeerLinkManager {
             byte[] shared = deriveSharedSecret(ecdhKeyPair, hostPublicKey);
             sessionKey = deriveSessionKey(shared, pinKey, sessionId);
             accepted = true;
-            updateNativeConnection();
+            reopenNativeSession();
             showStatus("Paired", "Connected. Establishing the direct phone-to-phone route…");
             createPeerConnection(false);
             return;
@@ -1023,6 +1023,17 @@ public final class PeerLinkManager {
             else
                 nativePeerDisconnected();
         }
+    }
+
+    /* A peer packet can set accepted false and true again before the core
+     * thread observes the gap. Force the native disconnect so the role and
+     * the SIO queues are rebuilt for this session. */
+    private synchronized void reopenNativeSession() {
+        if (nativeConnected) {
+            nativeConnected = false;
+            nativePeerDisconnected();
+        }
+        updateNativeConnection();
     }
 
     private void subscribe(String... topics) {

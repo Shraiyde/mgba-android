@@ -58,8 +58,12 @@ static uint32_t sCoopLastSioActive = UINT32_MAX;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static bool sCoopHostRole;
+static uint32_t sCoopPrevLocalSio = UINT32_MAX;
 static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
 static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
+static atomic_uint sPeerGeneration;
+static uint32_t sAppliedPeerGeneration;
+static bool sPeerSessionOpen;
 
 static char sAndroidRomStatus[192] = "ROM: not checked";
 static char sAndroidLoadStatus[96] = "LOAD: not attempted";
@@ -202,10 +206,12 @@ static void mSDLAndroidShowFailure(struct mSDLRenderer* renderer, const char* er
 void mAndroidPeerLinkSetConnected(bool host) {
 	atomic_store(&sPendingPeerHostRole, host);
 	atomic_store(&sPendingPeerState, 1);
+	atomic_fetch_add(&sPeerGeneration, 1);
 }
 
 void mAndroidPeerLinkSetDisconnected(void) {
 	atomic_store(&sPendingPeerState, 0);
+	atomic_fetch_add(&sPeerGeneration, 1);
 }
 
 void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
@@ -215,6 +221,17 @@ void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
 	pthread_mutex_unlock(&sPeerLinkPointerLock);
 }
 
+
+static bool mSDLAndroidCoopHeader(struct mCore* core, uint32_t address) {
+	struct GBA* gba = (struct GBA*) core->board;
+	const uint32_t* ewram = gba ? gba->memory.wram : NULL;
+	size_t word;
+	if (!ewram || address < GBA_EWRAM_START || address + 8 > GBA_EWRAM_END)
+		return false;
+	word = (address - GBA_EWRAM_START) / sizeof(uint32_t);
+	return ewram[word] == HNS_COOP_MAILBOX_MAGIC
+		&& ewram[word + 1] == ((uint32_t) HNS_COOP_MAILBOX_SIZE << 16 | HNS_COOP_MAILBOX_VERSION);
+}
 
 static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	if (!core || !core->busRead32 || !core->busRead16 || !core->busWrite32)
@@ -229,6 +246,11 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		return;
 
 	uint32_t frame = core->frameCounter ? core->frameCounter(core) : 0;
+	if (sCoopMailboxAddress && !mSDLAndroidCoopHeader(core, sCoopMailboxAddress)) {
+		sCoopMailboxAddress = 0;
+		sCoopMailboxNextScan = frame;
+		sCoopPrevLocalSio = UINT32_MAX;
+	}
 	if (!sCoopMailboxAddress && frame >= sCoopMailboxNextScan) {
 		sCoopMailboxNextScan = frame + 30;
 		/*
@@ -254,7 +276,22 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	}
 
 	if (sCoopMailboxAddress) {
-		core->busWrite32(core, sCoopMailboxAddress + 8, connected ? 1 : 0);
+		uint32_t transport = connected ? 1 : 0;
+		if (!connected) {
+			sCoopPrevLocalSio = UINT32_MAX;
+		} else {
+			/* gameReady stays 0 until the link handshake has actually produced
+			 * the other player. The first warp in that window uses the link
+			 * map loader and follows an unspawned guest. Dropping transport
+			 * for this one frame makes the ROM close the link before that
+			 * loader runs. Later warps, after gameReady, keep the session. */
+			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + 2096);
+			uint32_t localSioNow = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
+			if (!gameReady && sCoopPrevLocalSio == 1 && localSioNow == 0)
+				transport = 0;
+			sCoopPrevLocalSio = localSioNow;
+		}
+		core->busWrite32(core, sCoopMailboxAddress + 8, transport);
 		core->busWrite32(core, sCoopMailboxAddress + 2124, sCoopHostRole ? 1 : 0);
 		if (!connected) {
 			core->busWrite32(core, sCoopMailboxAddress + 2112, 0);
@@ -392,15 +429,31 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 }
 
 static void mSDLAndroidApplyPendingPeerState(void) {
-	int state = atomic_exchange(&sPendingPeerState, -1);
-	if (state < 0)
+	uint32_t generation;
+	uint32_t generationAgain;
+	int state;
+	bool host;
+	bool connected;
+	do {
+		generation = atomic_load(&sPeerGeneration);
+		state = atomic_load(&sPendingPeerState);
+		host = atomic_load(&sPendingPeerHostRole);
+		generationAgain = atomic_load(&sPeerGeneration);
+	} while (generation != generationAgain);
+	if (generation == sAppliedPeerGeneration)
 		return;
-	bool connected = state == 1;
-	bool host = atomic_load(&sPendingPeerHostRole);
+	sAppliedPeerGeneration = generation;
+	connected = state == 1;
+	/* A new peer packet increments the generation even when the connected
+	 * flag never looks like it changed. Drop the previous native session
+	 * first so the role and both SIO queues belong to this session. */
+	if (sPeerSessionOpen && sPeerLink)
+		mPeerLinkSetConnected(sPeerLink, false);
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopLastConfigSequence = UINT32_MAX;
+	sCoopPrevLocalSio = UINT32_MAX;
 	sCoopHostRole = connected && host;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
@@ -408,6 +461,7 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 	}
 	if (sLinkCable)
 		mAndroidLinkCableSetRole(sLinkCable, connected && host);
+	sPeerSessionOpen = connected;
 }
 
 static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
