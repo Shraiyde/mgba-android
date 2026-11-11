@@ -38,19 +38,6 @@ static JNIEnv* _getEnv(bool* attached) {
     return env;
 }
 
-/* Take a local class reference while the global reference is protected.
- * Activity recreation can replace the global reference while network and
- * sender threads are entering JNI; the local reference keeps this class alive
- * for the duration of the call. */
-static bool _getManagerMethod(JNIEnv* env, jmethodID method, jclass* localClass) {
-    *localClass = NULL;
-    pthread_mutex_lock(&sJniLock);
-    if (sManagerClass && method)
-        *localClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
-    pthread_mutex_unlock(&sJniLock);
-    return *localClass != NULL;
-}
-
 bool mAndroidPeerJniSendFrame(const uint8_t* frame, size_t size) {
     if (!frame || !size || size > 8192)
         return false;
@@ -69,6 +56,8 @@ bool mAndroidPeerJniSendFrame(const uint8_t* frame, size_t size) {
         managerClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
     pthread_mutex_unlock(&sJniLock);
     if (!managerClass) {
+        if ((*env)->ExceptionCheck(env))
+            (*env)->ExceptionClear(env);
         if (attached) {
             pthread_mutex_lock(&sJniLock);
             JavaVM* vm = sJavaVM;
@@ -128,6 +117,8 @@ void mAndroidPeerJniSyncConnection(void) {
     if (sManagerClass && method)
         managerClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
     pthread_mutex_unlock(&sJniLock);
+    if (!managerClass && (*env)->ExceptionCheck(env))
+        (*env)->ExceptionClear(env);
     if (managerClass) {
         (*env)->CallStaticVoidMethod(env, managerClass, method);
         if ((*env)->ExceptionCheck(env))
@@ -156,6 +147,8 @@ void mAndroidPeerJniShowDialog(void) {
     if (sManagerClass && method)
         managerClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
     pthread_mutex_unlock(&sJniLock);
+    if (!managerClass && (*env)->ExceptionCheck(env))
+        (*env)->ExceptionClear(env);
     if (managerClass) {
         (*env)->CallStaticVoidMethod(env, managerClass, method);
         if ((*env)->ExceptionCheck(env))
