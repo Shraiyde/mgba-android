@@ -15,6 +15,10 @@ set(LIBMGBA_ONLY ON)
 set(DISABLE_DEPS OFF CACHE BOOL "" FORCE)
 set(USE_ZLIB ON CACHE BOOL "" FORCE)
 add_subdirectory(${MGBA_ROOT} mgba)
+
+# The mGBA target sets its own compile properties; apply optimization
+# directly so the emulator core is not left at the Android Debug default.
+target_compile_options(mgba PRIVATE -O2)
 if(ANDROID)
 	# Android's 64-bit off_t is already supported by fopen/ftello/fseeko.
 	# Force minizip's portable stdio path instead of unavailable *64 symbols.
@@ -38,6 +42,8 @@ add_library(main SHARED
 	${MGBA_ROOT}/src/platform/sdl/sdl-audio.c
 	${MGBA_ROOT}/src/platform/sdl/sdl-events.c
 	${MGBA_ROOT}/src/platform/sdl/sw-sdl2.c)
+
+target_compile_options(main PRIVATE -O2)
 
 # The SDL frontend sources must be compiled with the same feature/function
 # detection defines as the core (ENABLE_DIRECTORIES, HAVE_LOCALE_T, ...).
