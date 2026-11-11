@@ -129,7 +129,7 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		}
 		SDL_RendererInfo info;
 		const char* rendererName = SDL_GetRendererInfo(renderer->sdlRenderer, &info) == 0 ? info.name : "unknown";
-		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f V%.1fms V=%d Q=%d",
+		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f VW%.1fms VC=%d Q=%d",
 			rendererName ? rendererName : "unknown", waitMs, uploadMs, drawMs, presentMs, coopMs, audioWaitMs, videoPostWaitMs,
 			gba->video.vcount, haveSyncSnapshot ? pending : -1);
 		SDL_Log("GBA diagnostic: fpsCore=%.2f fpsDraw=%.2f waitMs=%.3f uploadMs=%.3f presentMs=%.3f coopMs=%.3f renderer=%s pc=%08X cycles=%d nextEvent=%d halted=%d vcount=%d frames=%u event=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
