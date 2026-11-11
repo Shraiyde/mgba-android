@@ -62,6 +62,8 @@ static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
 static char sAndroidRomStatus[192] = "ROM: not checked";
 static char sAndroidLoadStatus[96] = "LOAD: not attempted";
 static char sAndroidLastError[192] = "ERROR: none";
+static int sAndroidSwapIntervalSet = -1;
+static int sAndroidSwapInterval = -1;
 
 static bool mSDLAndroidFrameIsBlack(const struct mSDLRenderer* renderer) {
 	if (!renderer || !renderer->outputBuffer || renderer->outputStride < (int) renderer->width)
@@ -141,10 +143,12 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		SDL_RendererInfo info = {0};
 		bool haveRendererInfo = SDL_GetRendererInfo(renderer->sdlRenderer, &info) == 0;
 		const char* rendererName = haveRendererInfo ? info.name : "unknown";
-		int vsyncEnabled = haveRendererInfo && (info.flags & SDL_RENDERER_PRESENTVSYNC);
-		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f VW%.1f R%.1f CPU%.1f VS=%d TV=%d VC=%d Q=%d",
+		const char* vsyncStatus = sAndroidSwapIntervalSet == 0
+			? (sAndroidSwapInterval == 0 ? "OFF" : "MISMATCH")
+			: (sAndroidSwapIntervalSet == -2 ? "NOGL" : "ERROR");
+		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f VW%.1f R%.1f CPU%.1f VS=%s TV=%d VC=%d Q=%d",
 			rendererName ? rendererName : "unknown", waitMs, uploadMs, drawMs, presentMs, coopMs, audioWaitMs, videoPostWaitMs,
-			videoRunWallMs, videoRunCpuMs, vsyncEnabled, renderer->core->videoLogger != NULL, gba->video.vcount, haveSyncSnapshot ? pending : -1);
+			videoRunWallMs, videoRunCpuMs, vsyncStatus, renderer->core->videoLogger != NULL, gba->video.vcount, haveSyncSnapshot ? pending : -1);
 		SDL_Log("GBA diagnostic: fpsCore=%.2f fpsDraw=%.2f waitMs=%.3f uploadMs=%.3f presentMs=%.3f coopMs=%.3f renderer=%s pc=%08X cycles=%d nextEvent=%d halted=%d vcount=%d frames=%u event=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
 			coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs, rendererName ? rendererName : "unknown",
 			cpu->gprs[ARM_PC], cpu->cycles, cpu->nextEvent, cpu->halted, gba->video.vcount,
@@ -419,6 +423,20 @@ static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
 	if (!renderer->window || !renderer->sdlRenderer) {
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not create Android SDL renderer: %s", SDL_GetError());
 		return false;
+	}
+	// Explicitly request an unsynchronized EGL buffer swap and retain the
+	// return status. SDL's renderer-info flag alone can hide a failed request.
+	if (SDL_GL_GetCurrentContext()) {
+		sAndroidSwapIntervalSet = SDL_GL_SetSwapInterval(0);
+		sAndroidSwapInterval = SDL_GL_GetSwapInterval();
+		if (sAndroidSwapIntervalSet != 0) {
+			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Could not disable Android EGL VSync: %s", SDL_GetError());
+		} else {
+			SDL_Log("Android EGL swap interval set to 0 (reported=%d)", sAndroidSwapInterval);
+		}
+	} else {
+		sAndroidSwapIntervalSet = -2;
+		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android SDL renderer has no current GL context for swap interval verification");
 	}
 	SDL_GetWindowSize(renderer->window, &renderer->viewportWidth, &renderer->viewportHeight);
 	renderer->player.window = renderer->window;
