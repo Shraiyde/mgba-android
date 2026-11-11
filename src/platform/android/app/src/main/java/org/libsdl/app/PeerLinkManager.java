@@ -150,7 +150,7 @@ public final class PeerLinkManager {
     private volatile String salt;
     private volatile String hostPublicKey;
     private volatile String acceptedJoinPublicKey;
-    private int acceptRetryAttempts;
+    private volatile int acceptRetryAttempts;
     private volatile String toHostTopic;
     private volatile String toJoinTopic;
     private volatile String relayHostTopic;
@@ -160,6 +160,8 @@ public final class PeerLinkManager {
     private volatile boolean pcHelloSent;
     private volatile long lastPcServerHeartbeatAt;
     private volatile String pcClientId;
+    private volatile String pcPeerId;
+    private volatile String pcPeerPublicKey;
     private volatile boolean mqttConnected;
     private volatile boolean retryEnabled;
     private volatile boolean accepted;
@@ -430,6 +432,15 @@ public final class PeerLinkManager {
                         accepted = false;
                         pcHelloSent = false;
                         sessionKey = null;
+                        pcPeerId = null;
+                        pcPeerPublicKey = null;
+                        sendCounter.set(1);
+                        resetReceiveCounters();
+                        try {
+                            // A broker reconnect starts a fresh ECDH exchange.
+                            // Never restart a GCM counter under the previous key.
+                            ecdhKeyPair = createEcdhKeyPair();
+                        } catch (Exception ignored) {}
                         handler.removeCallbacks(pcHeartbeat);
                     }
                     updateNativeConnection();
@@ -568,6 +579,8 @@ public final class PeerLinkManager {
         pinKey = candidatePinKey;
         sessionKey = null;
         accepted = false;
+        pcPeerId = null;
+        pcPeerPublicKey = null;
         updateNativeConnection();
         sendCounter.set(1);
         resetReceiveCounters();
@@ -617,9 +630,17 @@ public final class PeerLinkManager {
             String expected = hmacText(pinKey, sessionId + "|" + peerId + "|" + peerPublicKey);
             if (!constantTimeEquals(expected, proof))
                 return;
+            boolean assignedHost = data.optInt("role", 0) == 0;
+            // QoS 1 MQTT delivery may duplicate a control packet. Re-deriving
+            // the same key and resetting the GCM counter would reuse nonces.
+            if (accepted && sessionKey != null && peerId.equals(pcPeerId)
+                && peerPublicKey.equals(pcPeerPublicKey) && host == assignedHost)
+                return;
             byte[] shared = deriveSharedSecret(ecdhKeyPair, peerPublicKey);
             sessionKey = deriveSessionKey(shared, pinKey, sessionId);
-            host = data.optInt("role", 0) == 0;
+            pcPeerId = peerId;
+            pcPeerPublicKey = peerPublicKey;
+            host = assignedHost;
             sendCounter.set(1);
             resetReceiveCounters();
             accepted = true;
@@ -628,6 +649,8 @@ public final class PeerLinkManager {
         } else if ("peer-disconnected".equals(type)) {
             accepted = false;
             sessionKey = null;
+            pcPeerId = null;
+            pcPeerPublicKey = null;
             updateNativeConnection();
             showStatus("Player disconnected", "Holding the session while the other phone reconnects…");
         } else if ("full".equals(type) || "rejected".equals(type)) {
@@ -718,6 +741,8 @@ public final class PeerLinkManager {
             return;
         String type = signal.optString("type");
         if ("accept".equals(type) && !host) {
+            if (accepted && sessionKey != null)
+                return;
             String expected = hmacText(pinKey, sessionId + "|accept|" + Base64.encodeToString(ecdhKeyPair.getPublic().getEncoded(), Base64.NO_WRAP));
             if (!constantTimeEquals(expected, signal.getString("proof")))
                 return;
@@ -1133,6 +1158,8 @@ public final class PeerLinkManager {
         sessionKey = null;
         acceptedJoinPublicKey = null;
         acceptRetryAttempts = 0;
+        pcPeerId = null;
+        pcPeerPublicKey = null;
         pinKey = null;
         ecdhKeyPair = null;
         pendingCandidates.clear();
