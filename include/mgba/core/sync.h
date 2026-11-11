@@ -30,6 +30,11 @@ struct mCoreSync {
 	uint64_t audioWaitNs;
 	uint64_t audioWaitCount;
 	uint64_t videoPostWaitNs;
+	uint64_t videoRunWallNs;
+	uint64_t videoRunCpuNs;
+	uint64_t videoRunCount;
+	uint64_t videoRunLastWallNs;
+	uint64_t videoRunLastCpuNs;
 
 	float fpsTarget;
 };
