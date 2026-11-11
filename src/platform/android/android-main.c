@@ -138,11 +138,13 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 			lastAudioWaitCount = count;
 			MutexUnlock(&gba->sync->audioBufferMutex);
 		}
-		SDL_RendererInfo info;
-		const char* rendererName = SDL_GetRendererInfo(renderer->sdlRenderer, &info) == 0 ? info.name : "unknown";
-		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f VW%.1f R%.1f CPU%.1f TV=%d VC=%d Q=%d",
+		SDL_RendererInfo info = {0};
+		bool haveRendererInfo = SDL_GetRendererInfo(renderer->sdlRenderer, &info) == 0;
+		const char* rendererName = haveRendererInfo ? info.name : "unknown";
+		int vsyncEnabled = haveRendererInfo && (info.flags & SDL_RENDERER_PRESENTVSYNC);
+		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f VW%.1f R%.1f CPU%.1f VS=%d TV=%d VC=%d Q=%d",
 			rendererName ? rendererName : "unknown", waitMs, uploadMs, drawMs, presentMs, coopMs, audioWaitMs, videoPostWaitMs,
-			videoRunWallMs, videoRunCpuMs, renderer->core->videoLogger != NULL, gba->video.vcount, haveSyncSnapshot ? pending : -1);
+			videoRunWallMs, videoRunCpuMs, vsyncEnabled, renderer->core->videoLogger != NULL, gba->video.vcount, haveSyncSnapshot ? pending : -1);
 		SDL_Log("GBA diagnostic: fpsCore=%.2f fpsDraw=%.2f waitMs=%.3f uploadMs=%.3f presentMs=%.3f coopMs=%.3f renderer=%s pc=%08X cycles=%d nextEvent=%d halted=%d vcount=%d frames=%u event=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
 			coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs, rendererName ? rendererName : "unknown",
 			cpu->gprs[ARM_PC], cpu->cycles, cpu->nextEvent, cpu->halted, gba->video.vcount,
