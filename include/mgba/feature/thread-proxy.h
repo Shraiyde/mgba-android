@@ -25,6 +25,7 @@ struct mVideoThreadProxy {
 	struct mVideoLogger d;
 
 	Thread thread;
+	bool threadCreated;
 	Condition fromThreadCond;
 	Condition toThreadCond;
 	Mutex mutex;
