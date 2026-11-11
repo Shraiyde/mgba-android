@@ -7,10 +7,9 @@
 
 #include <mgba/core/config.h>
 #include <mgba-util/audio-buffer.h>
+#include <time.h>
 #ifdef USE_PTHREADS
 #include <sys/time.h>
-#else
-#include <time.h>
 #endif
 
 static uint64_t _syncNowNs(void) {
@@ -22,6 +21,18 @@ static uint64_t _syncNowNs(void) {
 	struct timespec ts;
 	timespec_get(&ts, TIME_UTC);
 	return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+#endif
+}
+
+static uint64_t _syncThreadCpuNowNs(void) {
+#ifdef USE_PTHREADS
+	struct timespec ts;
+	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+		return 0;
+	}
+	return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+#else
+	return _syncNowNs();
 #endif
 }
 
@@ -53,9 +64,18 @@ void mCoreSyncPostFrame(struct mCoreSync* sync) {
 		return;
 	}
 
-	uint64_t waitStart = _syncNowNs();
+	uint64_t runWallNow = _syncNowNs();
+	uint64_t runCpuNow = _syncThreadCpuNowNs();
+	uint64_t waitStart = runWallNow;
 	bool waited = false;
 	MutexLock(&sync->videoFrameMutex);
+	if (sync->videoRunLastWallNs && runWallNow >= sync->videoRunLastWallNs) {
+		sync->videoRunWallNs += runWallNow - sync->videoRunLastWallNs;
+		if (runCpuNow && sync->videoRunLastCpuNs && runCpuNow >= sync->videoRunLastCpuNs) {
+			sync->videoRunCpuNs += runCpuNow - sync->videoRunLastCpuNs;
+		}
+		++sync->videoRunCount;
+	}
 	++sync->videoPostCount;
 	++sync->videoFramePending;
 	do {
@@ -68,6 +88,8 @@ void mCoreSyncPostFrame(struct mCoreSync* sync) {
 	if (waited) {
 		sync->videoPostWaitNs += _syncNowNs() - waitStart;
 	}
+	sync->videoRunLastWallNs = _syncNowNs();
+	sync->videoRunLastCpuNs = _syncThreadCpuNowNs();
 	MutexUnlock(&sync->videoFrameMutex);
 }
 
