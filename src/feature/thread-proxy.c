@@ -49,8 +49,14 @@ void mVideoThreadProxyInit(struct mVideoLogger* logger) {
 	MutexInit(&proxyRenderer->mutex);
 	RingFIFOInit(&proxyRenderer->dirtyQueue, 0x40000);
 
-	proxyRenderer->threadState = PROXY_THREAD_IDLE;
-	ThreadCreate(&proxyRenderer->thread, _proxyThread, proxyRenderer);
+	// Do not advertise an idle worker unless pthread_create actually succeeded.
+	proxyRenderer->threadState = PROXY_THREAD_STOPPED;
+	proxyRenderer->threadCreated = ThreadCreate(&proxyRenderer->thread, _proxyThread, proxyRenderer) == 0;
+	if (proxyRenderer->threadCreated) {
+		proxyRenderer->threadState = PROXY_THREAD_IDLE;
+	} else {
+		mLOG(GBA_VIDEO, ERROR, "Could not start proxy rendering thread");
+	}
 }
 
 void mVideoThreadProxyReset(struct mVideoLogger* logger) {
@@ -66,7 +72,6 @@ void mVideoThreadProxyReset(struct mVideoLogger* logger) {
 
 void mVideoThreadProxyDeinit(struct mVideoLogger* logger) {
 	struct mVideoThreadProxy* proxyRenderer = (struct mVideoThreadProxy*) logger;
-	bool waiting = false;
 	MutexLock(&proxyRenderer->mutex);
 	while (proxyRenderer->threadState == PROXY_THREAD_BUSY) {
 		ConditionWake(&proxyRenderer->toThreadCond);
@@ -75,11 +80,11 @@ void mVideoThreadProxyDeinit(struct mVideoLogger* logger) {
 	if (proxyRenderer->threadState == PROXY_THREAD_IDLE) {
 		proxyRenderer->threadState = PROXY_THREAD_STOPPED;
 		ConditionWake(&proxyRenderer->toThreadCond);
-		waiting = true;
 	}
 	MutexUnlock(&proxyRenderer->mutex);
-	if (waiting) {
+	if (proxyRenderer->threadCreated) {
 		ThreadJoin(&proxyRenderer->thread);
+		proxyRenderer->threadCreated = false;
 	}
 	RingFIFODeinit(&proxyRenderer->dirtyQueue);
 	ConditionDeinit(&proxyRenderer->fromThreadCond);
@@ -93,11 +98,27 @@ void _proxyThreadRecover(struct mVideoThreadProxy* proxyRenderer) {
 		MutexUnlock(&proxyRenderer->mutex);
 		return;
 	}
-	RingFIFOClear(&proxyRenderer->dirtyQueue);
 	MutexUnlock(&proxyRenderer->mutex);
-	ThreadJoin(&proxyRenderer->thread);
+
+	// Join only a worker that was successfully created. pthread_join on an
+	// uninitialized pthread_t is undefined behaviour after startup failure.
+	if (proxyRenderer->threadCreated) {
+		ThreadJoin(&proxyRenderer->thread);
+		proxyRenderer->threadCreated = false;
+	}
+
+	MutexLock(&proxyRenderer->mutex);
+	RingFIFOClear(&proxyRenderer->dirtyQueue);
 	proxyRenderer->threadState = PROXY_THREAD_IDLE;
-	ThreadCreate(&proxyRenderer->thread, _proxyThread, proxyRenderer);
+	MutexUnlock(&proxyRenderer->mutex);
+
+	proxyRenderer->threadCreated = ThreadCreate(&proxyRenderer->thread, _proxyThread, proxyRenderer) == 0;
+	if (!proxyRenderer->threadCreated) {
+		MutexLock(&proxyRenderer->mutex);
+		proxyRenderer->threadState = PROXY_THREAD_STOPPED;
+		MutexUnlock(&proxyRenderer->mutex);
+		mLOG(GBA_VIDEO, ERROR, "Could not restart proxy rendering thread");
+	}
 }
 
 static bool _writeData(struct mVideoLogger* logger, const void* data, size_t length) {
@@ -152,12 +173,13 @@ static void _lock(struct mVideoLogger* logger) {
 
 static void _wait(struct mVideoLogger* logger) {
 	struct mVideoThreadProxy* proxyRenderer = (struct mVideoThreadProxy*) logger;
+	MutexLock(&proxyRenderer->mutex);
 	if (proxyRenderer->threadState == PROXY_THREAD_STOPPED) {
+		MutexUnlock(&proxyRenderer->mutex);
 		mLOG(GBA_VIDEO, ERROR, "Proxy thread stopped prematurely!");
 		_proxyThreadRecover(proxyRenderer);
 		return;
 	}
-	MutexLock(&proxyRenderer->mutex);
 	while (RingFIFOSize(&proxyRenderer->dirtyQueue)) {
 		ConditionWake(&proxyRenderer->toThreadCond);
 		ConditionWait(&proxyRenderer->fromThreadCond, &proxyRenderer->mutex);
@@ -194,12 +216,13 @@ static THREAD_ENTRY _proxyThread(void* logger) {
 			proxyRenderer->event = 0;
 		} else {
 			MutexUnlock(&proxyRenderer->mutex);
-			if (!mVideoLoggerRendererRun(&proxyRenderer->d, false)) {
-				// FIFO was corrupted
+			bool queueCorrupted = !mVideoLoggerRendererRun(&proxyRenderer->d, false);
+			MutexLock(&proxyRenderer->mutex);
+			if (queueCorrupted) {
+				// Publish the stopped state under the mutex used by the producer.
 				proxyRenderer->threadState = PROXY_THREAD_STOPPED;
 				mLOG(GBA_VIDEO, ERROR, "Proxy thread queue got corrupted!");
 			}
-			MutexLock(&proxyRenderer->mutex);
 		}
 		ConditionWake(&proxyRenderer->fromThreadCond);
 		if (proxyRenderer->threadState != PROXY_THREAD_STOPPED) {
