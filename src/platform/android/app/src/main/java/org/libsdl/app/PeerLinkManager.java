@@ -72,6 +72,9 @@ public final class PeerLinkManager {
     private static final String PREF_PIN = "pin";
     private static final String PREF_SESSION = "session";
     private static final int PBKDF2_ITERATIONS = 500000;
+    private static final int MAX_PEER_FRAME_SIZE = 16 + 4096;
+    private static final int MAX_ENCRYPTED_FRAME_SIZE = 12 + MAX_PEER_FRAME_SIZE + 16;
+    private static final int MAX_MQTT_PAYLOAD_SIZE = 16 * 1024;
 
     private static Activity activity;
     private static PeerLinkManager instance;
@@ -495,6 +498,8 @@ public final class PeerLinkManager {
     }
 
     private void handleMqttMessage(String topic, byte[] payload) {
+        if (payload == null || payload.length > MAX_MQTT_PAYLOAD_SIZE)
+            return;
         try {
             if (pcServerMode) {
                 if (topic.equals(pcRoomTopic())) {
@@ -884,7 +889,8 @@ public final class PeerLinkManager {
 
     public static boolean sendFrame(byte[] frame) {
         PeerLinkManager manager = instance;
-        if (manager == null || frame == null || !manager.accepted || manager.sessionKey == null)
+        if (manager == null || frame == null || frame.length > MAX_PEER_FRAME_SIZE
+            || !manager.accepted || manager.sessionKey == null)
             return false;
         final byte[] queuedFrame = frame.clone();
         final byte[] queuedSessionKey = manager.sessionKey;
@@ -928,7 +934,8 @@ public final class PeerLinkManager {
     }
 
     private synchronized void handleEncryptedFrame(byte[] payload) {
-        if (sessionKey == null || payload == null || payload.length < 28)
+        if (sessionKey == null || payload == null || payload.length < 28
+            || payload.length > MAX_ENCRYPTED_FRAME_SIZE)
             return;
         try {
             ByteBuffer input = ByteBuffer.wrap(payload);
