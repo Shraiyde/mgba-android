@@ -76,9 +76,9 @@ public final class PeerLinkManager {
     private static final int MAX_ENCRYPTED_FRAME_SIZE = 12 + MAX_PEER_FRAME_SIZE + 16;
     private static final int MAX_MQTT_PAYLOAD_SIZE = 16 * 1024;
 
-    private static Activity activity;
-    private static PeerLinkManager instance;
-    private static boolean webRtcInitialized;
+    private static volatile Activity activity;
+    private static volatile PeerLinkManager instance;
+    private static volatile boolean webRtcInitialized;
     // Native emulation/render threads must never wait on MQTT/WebRTC work.
     // A single bounded sender preserves frame ordering and caps queued memory.
     private static final ThreadPoolExecutor frameSender = new ThreadPoolExecutor(
@@ -137,33 +137,37 @@ public final class PeerLinkManager {
     private final long[] receiveCounters = new long[] {0, 0};
     private final List<IceCandidate> pendingCandidates = Collections.synchronizedList(new ArrayList<>());
 
-    private MqttAsyncClient mqtt;
-    private PeerConnectionFactory factory;
-    private PeerConnection peerConnection;
-    private DataChannel dataChannel;
-    private String pin;
-    private String sessionId;
-    private String salt;
-    private String hostPublicKey;
-    private String acceptedJoinPublicKey;
+    private synchronized void resetReceiveCounters() {
+        resetReceiveCounters();
+    }
+
+    private volatile MqttAsyncClient mqtt;
+    private volatile PeerConnectionFactory factory;
+    private volatile PeerConnection peerConnection;
+    private volatile DataChannel dataChannel;
+    private volatile String pin;
+    private volatile String sessionId;
+    private volatile String salt;
+    private volatile String hostPublicKey;
+    private volatile String acceptedJoinPublicKey;
     private int acceptRetryAttempts;
-    private String toHostTopic;
-    private String toJoinTopic;
-    private String relayHostTopic;
-    private String relayJoinTopic;
+    private volatile String toHostTopic;
+    private volatile String toJoinTopic;
+    private volatile String relayHostTopic;
+    private volatile String relayJoinTopic;
     private volatile boolean host;
     private volatile boolean pcServerMode;
     private volatile boolean pcHelloSent;
-    private long lastPcServerHeartbeatAt;
-    private String pcClientId;
+    private volatile long lastPcServerHeartbeatAt;
+    private volatile String pcClientId;
     private volatile boolean mqttConnected;
     private volatile boolean retryEnabled;
     private volatile boolean accepted;
     private volatile boolean joinSent;
     private volatile boolean directConnected;
     private volatile boolean nativeConnected;
-    private KeyPair ecdhKeyPair;
-    private byte[] pinKey;
+    private volatile KeyPair ecdhKeyPair;
+    private volatile byte[] pinKey;
     private volatile byte[] sessionKey;
 
     private PeerLinkManager() {}
@@ -388,9 +392,11 @@ public final class PeerLinkManager {
         try {
             try { if (mqtt != null) mqtt.close(); } catch (Exception ignored) {}
             String clientId = "hns-" + UUID.randomUUID().toString().replace("-", "");
-            mqtt = new MqttAsyncClient(BROKER, clientId, new MemoryPersistence());
-            mqtt.setCallback(new MqttCallbackExtended() {
+            final MqttAsyncClient client = new MqttAsyncClient(BROKER, clientId, new MemoryPersistence());
+            mqtt = client;
+            client.setCallback(new MqttCallbackExtended() {
                 @Override public void connectComplete(boolean reconnect, String serverURI) {
+                    if (mqtt != client) return;
                     mqttConnected = true;
                     if (pcServerMode) {
                         subscribe(pcRoomTopic());
@@ -413,6 +419,7 @@ public final class PeerLinkManager {
                 }
 
                 @Override public void connectionLost(Throwable cause) {
+                    if (mqtt != client) return;
                     mqttConnected = false;
                     if (!directConnected) {
                         accepted = false;
@@ -430,6 +437,7 @@ public final class PeerLinkManager {
                 }
 
                 @Override public void messageArrived(String topic, MqttMessage message) {
+                    if (mqtt != client) return;
                     handleMqttMessage(topic, message.getPayload());
                 }
 
@@ -441,14 +449,16 @@ public final class PeerLinkManager {
             options.setCleanSession(true);
             options.setKeepAliveInterval(25);
             options.setConnectionTimeout(15);
-            mqtt.connect(options, null, new IMqttActionListener() {
+            client.connect(options, null, new IMqttActionListener() {
                 @Override public void onSuccess(IMqttToken token) {
+                    if (mqtt != client) return;
                     mqttConnected = true;
                     if (onReady != null)
                         onReady.run();
                 }
 
                 @Override public void onFailure(IMqttToken token, Throwable exception) {
+                    if (mqtt != client) return;
                     mqttConnected = false;
                     showStatus("Connection service unavailable", "Retrying the co-op rendezvous…");
                     if (retryEnabled)
@@ -560,7 +570,7 @@ public final class PeerLinkManager {
         accepted = false;
         updateNativeConnection();
         sendCounter.set(1);
-        receiveCounters[0] = receiveCounters[1] = 0;
+        resetReceiveCounters();
         ecdhKeyPair = createEcdhKeyPair();
         subscribe(pcDownControlTopic(), pcDownFrameTopic());
         sendPcHello();
@@ -611,7 +621,7 @@ public final class PeerLinkManager {
             sessionKey = deriveSessionKey(shared, pinKey, sessionId);
             host = data.optInt("role", 0) == 0;
             sendCounter.set(1);
-            receiveCounters[0] = receiveCounters[1] = 0;
+            resetReceiveCounters();
             accepted = true;
             updateNativeConnection();
             showStatus("Co-op connected", "Both phones are connected through your PC server.");
@@ -1090,7 +1100,7 @@ public final class PeerLinkManager {
         directConnected = false;
         pendingCandidates.clear();
         sendCounter.set(1);
-        receiveCounters[0] = receiveCounters[1] = 0;
+        resetReceiveCounters();
     }
 
     private void closeCurrentSession(boolean clearPreferences) {
@@ -1127,7 +1137,7 @@ public final class PeerLinkManager {
         ecdhKeyPair = null;
         pendingCandidates.clear();
         sendCounter.set(1);
-        receiveCounters[0] = receiveCounters[1] = 0;
+        resetReceiveCounters();
         if (clearPreferences && activity != null) {
             SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             String persistentPcClientId = prefs.getString("pc_client_id", null);
