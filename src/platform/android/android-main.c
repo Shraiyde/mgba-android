@@ -101,6 +101,7 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		static uint32_t postCount, startCount, acceptedCount, endCount;
 		static bool haveSyncSnapshot;
 		static uint64_t lastVideoWaitNs, lastAudioWaitNs, lastAudioWaitCount;
+		static uint32_t lastVideoPostCount;
 		static double videoPostWaitMs, audioWaitMs;
 		if (MutexTryLock(&gba->sync->videoFrameMutex) == 0) {
 			pending = gba->sync->videoFramePending;
@@ -110,8 +111,10 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 			acceptedCount = gba->sync->videoAcceptedCount;
 			endCount = gba->sync->videoEndCount;
 			uint64_t total = gba->sync->videoPostWaitNs;
-			if (total >= lastVideoWaitNs && postCount) videoPostWaitMs = (double) (total - lastVideoWaitNs) / 1000000.0 / (double) (postCount ? postCount - (postCount > 0 ? postCount - 1 : 0) : 1);
+			if (total >= lastVideoWaitNs && postCount > lastVideoPostCount)
+				videoPostWaitMs = (double) (total - lastVideoWaitNs) / 1000000.0 / (double) (postCount - lastVideoPostCount);
 			lastVideoWaitNs = total;
+			lastVideoPostCount = postCount;
 			MutexUnlock(&gba->sync->videoFrameMutex);
 			haveSyncSnapshot = true;
 		}
