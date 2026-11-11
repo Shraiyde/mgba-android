@@ -607,6 +607,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			}
 
 		}
+	}
 	if (!firstFrameLogged) {
 		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Android video loop exited before presenting its first frame (active=%d, crashed=%d)",
 			mCoreThreadIsActive(context), mCoreThreadHasCrashed(context));
