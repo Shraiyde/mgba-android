@@ -647,6 +647,10 @@ public final class PeerLinkManager {
             if (accepted && sessionKey != null && peerId.equals(pcPeerId)
                 && peerPublicKey.equals(pcPeerPublicKey))
                 return;
+            // Stop queued sends under the old key before resetting its nonce
+            // counter or publishing the new session key.
+            accepted = false;
+            sessionKey = null;
             byte[] shared = deriveSharedSecret(ecdhKeyPair, peerPublicKey);
             sessionKey = deriveSessionKey(shared, pinKey, sessionId);
             pcPeerId = peerId;
@@ -1140,6 +1144,9 @@ public final class PeerLinkManager {
     }
 
     private void resetPeerConnection() {
+        // Invalidate queued sends before the nonce counter is reset.
+        accepted = false;
+        sessionKey = null;
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
         peerConnection = null;
