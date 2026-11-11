@@ -470,8 +470,10 @@ void mPeerLinkSetConnected(struct mPeerLink* link, bool connected) {
 	bool wasConnected = atomic_load(&link->connected);
 	atomic_store(&link->running, connected);
 	atomic_store(&link->connected, connected);
-	atomic_store(&link->localSioActive, connected);
-	atomic_store(&link->remoteSioActive, connected);
+	// Transport connectivity is not the same as an active GBA multiplayer
+	// transfer. Wait for each peer's POSITION message to advertise SIO state.
+	atomic_store(&link->localSioActive, false);
+	atomic_store(&link->remoteSioActive, false);
 	pthread_mutex_lock(&link->lock);
 	if (!connected) {
 		link->sioQueueRead = 0;
