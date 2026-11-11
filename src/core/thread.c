@@ -425,6 +425,9 @@ static THREAD_ENTRY _mCoreThreadRun(void* context) {
 
 bool mCoreThreadStart(struct mCoreThread* threadContext) {
 	threadContext->impl = calloc(1, sizeof(*threadContext->impl));
+	if (!threadContext->impl) {
+		return false;
+	}
 	threadContext->impl->state = mTHREAD_INITIALIZED;
 	threadContext->impl->requested = 0;
 	threadContext->logger.p = threadContext;
@@ -454,7 +457,20 @@ bool mCoreThreadStart(struct mCoreThread* threadContext) {
 	mCoreSyncLoadCoreOpts(&threadContext->impl->sync, &threadContext->core->opts);
 
 	MutexLock(&threadContext->impl->stateMutex);
-	ThreadCreate(&threadContext->impl->thread, _mCoreThreadRun, threadContext);
+	if (ThreadCreate(&threadContext->impl->thread, _mCoreThreadRun, threadContext) != 0) {
+		MutexUnlock(&threadContext->impl->stateMutex);
+		ConditionDeinit(&threadContext->impl->sync.audioRequiredCond);
+		MutexDeinit(&threadContext->impl->sync.audioBufferMutex);
+		ConditionDeinit(&threadContext->impl->sync.videoFrameRequiredCond);
+		ConditionDeinit(&threadContext->impl->sync.videoFrameAvailableCond);
+		MutexDeinit(&threadContext->impl->sync.videoFrameMutex);
+		ConditionDeinit(&threadContext->impl->stateOffThreadCond);
+		ConditionDeinit(&threadContext->impl->stateOnThreadCond);
+		MutexDeinit(&threadContext->impl->stateMutex);
+		free(threadContext->impl);
+		threadContext->impl = NULL;
+		return false;
+	}
 	while (threadContext->impl->state < mTHREAD_RUNNING) {
 		ConditionWait(&threadContext->impl->stateOffThreadCond, &threadContext->impl->stateMutex);
 	}
