@@ -1,4 +1,5 @@
 /* Copyright (c) 2026
+ *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,6 +7,7 @@
 #include "android-peer-jni.h"
 
 #include <jni.h>
+#include <pthread.h>
 #include <stdlib.h>
 
 static JavaVM* sJavaVM;
@@ -13,26 +15,44 @@ static jclass sManagerClass;
 static jmethodID sSendFrameMethod;
 static jmethodID sShowDialogMethod;
 static jmethodID sSyncConnectionMethod;
+static pthread_mutex_t sJniLock = PTHREAD_MUTEX_INITIALIZER;
 
 static JNIEnv* _getEnv(bool* attached) {
     JNIEnv* env = NULL;
     *attached = false;
-    if (!sJavaVM)
+
+    pthread_mutex_lock(&sJniLock);
+    JavaVM* vm = sJavaVM;
+    pthread_mutex_unlock(&sJniLock);
+    if (!vm)
         return NULL;
 
-    jint result = (*sJavaVM)->GetEnv(sJavaVM, (void**) &env, JNI_VERSION_1_6);
+    jint result = (*vm)->GetEnv(vm, (void**) &env, JNI_VERSION_1_6);
     if (result == JNI_OK)
         return env;
     if (result != JNI_EDETACHED)
         return NULL;
-    if ((*sJavaVM)->AttachCurrentThread(sJavaVM, (void**) &env, NULL) != JNI_OK)
+    if ((*vm)->AttachCurrentThread(vm, (void**) &env, NULL) != JNI_OK)
         return NULL;
     *attached = true;
     return env;
 }
 
+/* Take a local class reference while the global reference is protected.
+ * Activity recreation can replace the global reference while network and
+ * sender threads are entering JNI; the local reference keeps this class alive
+ * for the duration of the call. */
+static bool _getManagerMethod(JNIEnv* env, jmethodID method, jclass* localClass) {
+    *localClass = NULL;
+    pthread_mutex_lock(&sJniLock);
+    if (sManagerClass && method)
+        *localClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
+    pthread_mutex_unlock(&sJniLock);
+    return *localClass != NULL;
+}
+
 bool mAndroidPeerJniSendFrame(const uint8_t* frame, size_t size) {
-    if (!frame || !size || size > 8192 || !sManagerClass || !sSendFrameMethod)
+    if (!frame || !size || size > 8192)
         return false;
 
     bool attached;
@@ -40,67 +60,155 @@ bool mAndroidPeerJniSendFrame(const uint8_t* frame, size_t size) {
     if (!env)
         return false;
 
+    jmethodID method;
+    jclass managerClass;
+    pthread_mutex_lock(&sJniLock);
+    method = sSendFrameMethod;
+    managerClass = NULL;
+    if (sManagerClass && method)
+        managerClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
+    pthread_mutex_unlock(&sJniLock);
+    if (!managerClass) {
+        if (attached) {
+            pthread_mutex_lock(&sJniLock);
+            JavaVM* vm = sJavaVM;
+            pthread_mutex_unlock(&sJniLock);
+            if (vm) (*vm)->DetachCurrentThread(vm);
+        }
+        return false;
+    }
+
     jbyteArray data = (*env)->NewByteArray(env, (jsize) size);
     if (!data) {
-        if (attached)
-            (*sJavaVM)->DetachCurrentThread(sJavaVM);
+        if ((*env)->ExceptionCheck(env))
+            (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, managerClass);
+        if (attached) {
+            pthread_mutex_lock(&sJniLock);
+            JavaVM* vm = sJavaVM;
+            pthread_mutex_unlock(&sJniLock);
+            if (vm) (*vm)->DetachCurrentThread(vm);
+        }
         return false;
     }
     (*env)->SetByteArrayRegion(env, data, 0, (jsize) size, (const jbyte*) frame);
-    jboolean sent = (*env)->CallStaticBooleanMethod(env, sManagerClass, sSendFrameMethod, data);
     bool exception = (*env)->ExceptionCheck(env);
-    if (exception)
+    jboolean sent = JNI_FALSE;
+    if (exception) {
         (*env)->ExceptionClear(env);
+    } else {
+        sent = (*env)->CallStaticBooleanMethod(env, managerClass, method, data);
+        exception = (*env)->ExceptionCheck(env);
+        if (exception)
+            (*env)->ExceptionClear(env);
+    }
     (*env)->DeleteLocalRef(env, data);
+    (*env)->DeleteLocalRef(env, managerClass);
 
-    if (attached)
-        (*sJavaVM)->DetachCurrentThread(sJavaVM);
+    if (attached) {
+        pthread_mutex_lock(&sJniLock);
+        JavaVM* vm = sJavaVM;
+        pthread_mutex_unlock(&sJniLock);
+        if (vm) (*vm)->DetachCurrentThread(vm);
+    }
     return sent == JNI_TRUE && !exception;
 }
 
 void mAndroidPeerJniSyncConnection(void) {
-    if (!sManagerClass || !sSyncConnectionMethod)
-        return;
     bool attached;
     JNIEnv* env = _getEnv(&attached);
     if (!env)
         return;
-    (*env)->CallStaticVoidMethod(env, sManagerClass, sSyncConnectionMethod);
-    if ((*env)->ExceptionCheck(env))
-        (*env)->ExceptionClear(env);
-    if (attached)
-        (*sJavaVM)->DetachCurrentThread(sJavaVM);
+
+    jmethodID method;
+    jclass managerClass;
+    pthread_mutex_lock(&sJniLock);
+    method = sSyncConnectionMethod;
+    managerClass = NULL;
+    if (sManagerClass && method)
+        managerClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
+    pthread_mutex_unlock(&sJniLock);
+    if (managerClass) {
+        (*env)->CallStaticVoidMethod(env, managerClass, method);
+        if ((*env)->ExceptionCheck(env))
+            (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, managerClass);
+    }
+    if (attached) {
+        pthread_mutex_lock(&sJniLock);
+        JavaVM* vm = sJavaVM;
+        pthread_mutex_unlock(&sJniLock);
+        if (vm) (*vm)->DetachCurrentThread(vm);
+    }
 }
 
 void mAndroidPeerJniShowDialog(void) {
-    if (!sManagerClass || !sShowDialogMethod)
-        return;
     bool attached;
     JNIEnv* env = _getEnv(&attached);
     if (!env)
         return;
-    (*env)->CallStaticVoidMethod(env, sManagerClass, sShowDialogMethod);
-    if ((*env)->ExceptionCheck(env))
-        (*env)->ExceptionClear(env);
-    if (attached)
-        (*sJavaVM)->DetachCurrentThread(sJavaVM);
+
+    jmethodID method;
+    jclass managerClass;
+    pthread_mutex_lock(&sJniLock);
+    method = sShowDialogMethod;
+    managerClass = NULL;
+    if (sManagerClass && method)
+        managerClass = (jclass) (*env)->NewLocalRef(env, sManagerClass);
+    pthread_mutex_unlock(&sJniLock);
+    if (managerClass) {
+        (*env)->CallStaticVoidMethod(env, managerClass, method);
+        if ((*env)->ExceptionCheck(env))
+            (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, managerClass);
+    }
+    if (attached) {
+        pthread_mutex_lock(&sJniLock);
+        JavaVM* vm = sJavaVM;
+        pthread_mutex_unlock(&sJniLock);
+        if (vm) (*vm)->DetachCurrentThread(vm);
+    }
 }
 
 JNIEXPORT void JNICALL Java_org_libsdl_app_PeerLinkManager_nativeInitialize(JNIEnv* env, jclass cls) {
-    if ((*env)->GetJavaVM(env, &sJavaVM) != JNI_OK)
+    JavaVM* vm = NULL;
+    if ((*env)->GetJavaVM(env, &vm) != JNI_OK || !vm)
         return;
-    if (sManagerClass)
-        (*env)->DeleteGlobalRef(env, sManagerClass);
-    sManagerClass = (jclass) (*env)->NewGlobalRef(env, cls);
-    sSendFrameMethod = (*env)->GetStaticMethodID(env, sManagerClass, "sendFrame", "([B)Z");
-    sShowDialogMethod = (*env)->GetStaticMethodID(env, sManagerClass, "showPairingDialog", "()V");
-    sSyncConnectionMethod = (*env)->GetStaticMethodID(env, sManagerClass, "syncNativeConnection", "()V");
+
+    jmethodID sendFrame = (*env)->GetStaticMethodID(env, cls, "sendFrame", "([B)Z");
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
-        sSendFrameMethod = NULL;
-        sShowDialogMethod = NULL;
-        sSyncConnectionMethod = NULL;
+        return;
     }
+    jmethodID showDialog = (*env)->GetStaticMethodID(env, cls, "showPairingDialog", "()V");
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    jmethodID syncConnection = (*env)->GetStaticMethodID(env, cls, "syncNativeConnection", "()V");
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+
+    jclass globalClass = (jclass) (*env)->NewGlobalRef(env, cls);
+    if (!globalClass) {
+        if ((*env)->ExceptionCheck(env))
+            (*env)->ExceptionClear(env);
+        return;
+    }
+
+    pthread_mutex_lock(&sJniLock);
+    jclass oldClass = sManagerClass;
+    sJavaVM = vm;
+    sManagerClass = globalClass;
+    sSendFrameMethod = sendFrame;
+    sShowDialogMethod = showDialog;
+    sSyncConnectionMethod = syncConnection;
+    pthread_mutex_unlock(&sJniLock);
+
+    if (oldClass)
+        (*env)->DeleteGlobalRef(env, oldClass);
 }
 
 JNIEXPORT void JNICALL Java_org_libsdl_app_PeerLinkManager_nativePeerConnected(JNIEnv* env, jobject instance, jboolean hostRole) {
