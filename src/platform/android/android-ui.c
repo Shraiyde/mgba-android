@@ -484,8 +484,9 @@ void mAndroidOverlayReset(void) {
 	int i;
 	for (i = 0; i < MAX_TOUCHES; ++i) {
 		if (overlay.touches[i].id != -1) {
-			_pushKey(overlay.touches[i].key, false);
+			if (overlay.touches[i].key != SDLK_UNKNOWN) _pushKey(overlay.touches[i].key, false);
 			overlay.touches[i].id = -1;
+			overlay.touches[i].joystick = false;
 		}
 	}
 }
