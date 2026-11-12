@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -586,6 +587,14 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 		}
 	}
 }
+static void _fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius) {
+	int y;
+	for (y = -radius; y <= radius; ++y) {
+		int x = (int) sqrt((double) radius * radius - (double) y * y);
+		SDL_RenderDrawLine(renderer, cx - x, cy + y, cx + x, cy + y);
+	}
+}
+
 static void _drawCircle(SDL_Renderer* renderer, int cx, int cy, int radius) {
 	int x = radius, y = 0, error = 1 - radius;
 	while (x >= y) {
@@ -615,7 +624,7 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	int n = _layout(view, buttons, &stick, &stickRadius);
 	int cx = stick.x + stickRadius, cy = stick.y + stickRadius;
 	SDL_SetRenderDrawColor(renderer, 30, 35, 45, 105);
-	SDL_RenderFillRect(renderer, &stick);
+	_fillCircle(renderer, cx, cy, stickRadius);
 	SDL_SetRenderDrawColor(renderer, 235, 240, 250, 190);
 	_drawCircle(renderer, cx, cy, stickRadius);
 	_drawCircle(renderer, cx, cy, stickRadius * 2 / 3);
@@ -626,7 +635,7 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	for (i = 0; i < n; ++i) {
 		if (buttons[i].round) {
 			int bx = buttons[i].rect.x + buttons[i].rect.w / 2, by = buttons[i].rect.y + buttons[i].rect.h / 2;
-			SDL_RenderFillRect(renderer, &buttons[i].rect);
+			_fillCircle(renderer, bx, by, buttons[i].rect.w / 2);
 			SDL_SetRenderDrawColor(renderer, 255, 255, 255, 210);
 			_drawCircle(renderer, bx, by, buttons[i].rect.w / 2);
 		} else {
