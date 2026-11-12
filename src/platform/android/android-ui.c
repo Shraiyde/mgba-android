@@ -418,12 +418,11 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* st
 	int smallW = unit * 2;
 	int smallH = unit * 3 / 4;
 	int gap = unit / 3;
-	int controlsY = h - unit - smallH;
-	if (controlsY < topY + unit + gap) controlsY = topY + unit + gap;
+	int controlsY = topY + unit + gap;
 	out[n++] = (struct OverlayButton) {{w / 2 - smallW - gap / 2, controlsY, smallW, smallH}, SDLK_RETURN, "START", false};
 	out[n++] = (struct OverlayButton) {{w / 2 + gap / 2, controlsY, smallW, smallH}, SDLK_BACKSPACE, "SELECT", false};
 	if (!overlay.romLoaded)
-		out[n++] = (struct OverlayButton) {{w / 2 - unit * 2, topY + unit + 8, unit * 4, unit}, SDLK_F14, "LOAD ROM", false};
+		out[n++] = (struct OverlayButton) {{w / 2 - unit * 2, h / 2 - unit / 2, unit * 4, unit}, SDLK_F14, "LOAD ROM", false};
 	out[n++] = (struct OverlayButton) {{w / 2 - unit, topY, unit * 2, unit}, SDLK_F13, "LINK", false};
 	return n;
 }
