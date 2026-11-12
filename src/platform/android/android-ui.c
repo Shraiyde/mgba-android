@@ -404,26 +404,27 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* st
 	stick->h = radius * 2;
 	*stickRadius = radius;
 
-	int abRadius = unit * 3 / 4;
+	int abRadius = unit / 2;
 	int abx = landscape ? w - unit * 3 : w * 3 / 4;
 	int aby = sy;
 	out[n++] = (struct OverlayButton) {{abx + unit / 2, aby - abRadius, abRadius * 2, abRadius * 2}, SDLK_x, "A", true};
 	out[n++] = (struct OverlayButton) {{abx - abRadius * 2 - unit / 2, aby + unit / 5, abRadius * 2, abRadius * 2}, SDLK_z, "B", true};
 
 	int topY = 10;
-	int shoulderW = unit * 2;
-	out[n++] = (struct OverlayButton) {{unit / 3, topY, shoulderW, unit}, SDLK_a, "L", false};
-	out[n++] = (struct OverlayButton) {{w - shoulderW - unit / 3, topY, shoulderW, unit}, SDLK_s, "R", false};
+	int shoulderW = unit * 3 / 2;
+	int shoulderH = unit * 3 / 4;
+	out[n++] = (struct OverlayButton) {{unit / 3, topY, shoulderW, shoulderH}, SDLK_a, "L", false};
+	out[n++] = (struct OverlayButton) {{w - shoulderW - unit / 3, topY, shoulderW, shoulderH}, SDLK_s, "R", false};
 
 	int smallW = unit * 2;
-	int smallH = unit * 3 / 4;
+	int smallH = unit / 2;
 	int gap = unit / 3;
 	int controlsY = topY + unit + gap;
 	out[n++] = (struct OverlayButton) {{w / 2 - smallW - gap / 2, controlsY, smallW, smallH}, SDLK_RETURN, "START", false};
 	out[n++] = (struct OverlayButton) {{w / 2 + gap / 2, controlsY, smallW, smallH}, SDLK_BACKSPACE, "SELECT", false};
 	if (!overlay.romLoaded)
-		out[n++] = (struct OverlayButton) {{w / 2 - unit * 2, h / 2 - unit / 2, unit * 4, unit}, SDLK_F14, "LOAD ROM", false};
-	out[n++] = (struct OverlayButton) {{w / 2 - unit, topY, unit * 2, unit}, SDLK_F13, "LINK", false};
+		out[n++] = (struct OverlayButton) {{w / 2 - unit * 3 / 2, h / 2 - unit * 3 / 8, unit * 3, unit * 3 / 4}, SDLK_F14, "LOAD ROM", false};
+	out[n++] = (struct OverlayButton) {{w / 2 - unit, topY, unit * 2, unit * 3 / 4}, SDLK_F13, "LINK", false};
 	return n;
 }
 static const SDL_Rect* _toggleRect(void) {
