@@ -319,11 +319,16 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
                 }
             }
 			uint32_t localMapId = core->busRead32(core, sCoopMailboxAddress + 2104);
+			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + 2096) ? 1 : 0;
 			uint32_t localSioActive = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
-			if (localSioActive != sCoopLastSioActive)
-				mPeerLinkSetLocalSioActive(sPeerLink, localSioActive != 0);
-			if (localMapId != sCoopLastMapSent || localSioActive != sCoopLastSioActive || frame % 30 == 0) {
-				uint32_t networkState[2] = { htonl(localMapId), htonl(localSioActive) };
+			/* The initial GBA link handshake must run before gameReady can be
+			 * published. Treat the connected pre-handshake session as SIO-active;
+			 * once the handshake completes, honor the ROM's map/battle activity bit. */
+			uint32_t sioActive = localSioActive || !gameReady;
+			if (sioActive != sCoopLastSioActive)
+				mPeerLinkSetLocalSioActive(sPeerLink, sioActive != 0);
+			if (localMapId != sCoopLastMapSent || sioActive != sCoopLastSioActive || frame % 30 == 0) {
+				uint32_t networkState[2] = { htonl(localMapId), htonl(sioActive) };
 				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, sizeof(networkState))) {
 					sCoopLastMapSent = localMapId;
 					sCoopLastSioActive = localSioActive;
