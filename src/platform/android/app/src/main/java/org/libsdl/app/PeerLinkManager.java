@@ -281,24 +281,76 @@ public final class PeerLinkManager {
     }
 
     private void showJoinPinDialog() {
+        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String savedRole = prefs.getString(PREF_ROLE, null);
+        String savedPin = prefs.getString(PREF_PIN, null);
+        String savedSession = prefs.getString(PREF_SESSION, null);
+
+        // Both phones advertise a temporary host code. Comparing the two codes
+        // deterministically elects one host and one joiner after they exchange them.
+        if (!"host".equals(savedRole) || savedPin == null || !savedPin.matches("\\d{4}")) {
+            startHost(null, null);
+        } else if (!host || !retryEnabled) {
+            startHost(savedPin, savedSession);
+        }
+
         EditText pinInput = new EditText(activity);
         pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
         pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(4) });
         pinInput.setGravity(Gravity.CENTER);
         pinInput.setTextSize(28);
+        pinInput.setHint("Enter companion code");
 
-        new AlertDialog.Builder(activity)
-            .setTitle("Enter Petra's PIN")
-            .setView(pinInput)
+        TextView codeLabel = new TextView(activity);
+        codeLabel.setText("Companion code");
+        codeLabel.setTextSize(16);
+        codeLabel.setPadding(0, 20, 0, 4);
+
+        TextView codeValue = new TextView(activity);
+        codeValue.setText(pin);
+        codeValue.setTextSize(30);
+        codeValue.setGravity(Gravity.CENTER);
+        codeValue.setTextIsSelectable(true);
+
+        LinearLayout content = new LinearLayout(activity);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int padding = (int) (20 * activity.getResources().getDisplayMetrics().density);
+        content.setPadding(padding, padding, padding, padding);
+        content.addView(pinInput, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        content.addView(codeLabel);
+        content.addView(codeValue, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(activity)
+            .setTitle("Connect another phone")
+            .setView(content)
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Connect", (dialog, which) -> {
-                String entered = pinInput.getText().toString().trim();
-                if (entered.length() == 4)
-                    startJoin(entered);
-                else
-                    showMessage("Enter all four digits.");
-            })
-            .show();
+            .setPositiveButton("Connect", null)
+            .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String entered = pinInput.getText().toString().trim();
+            if (!entered.matches("\\d{4}")) {
+                showMessage("Enter all four digits.");
+                return;
+            }
+            if (entered.equals(pin)) {
+                startHost(null, null);
+                codeValue.setText(pin);
+                pinInput.setText("");
+                showMessage("The codes must be different. Share the new companion code.");
+                return;
+            }
+
+            dialog.dismiss();
+            if (pin.compareTo(entered) < 0) {
+                // The lower code remains the host; the other phone joins it.
+                showStatus("Waiting for companion", "Share your companion code with the other phone.");
+            } else {
+                startJoin(entered);
+            }
+        }));
+        dialog.show();
     }
 
     private void showPcServerPinDialog() {
@@ -633,7 +685,7 @@ public final class PeerLinkManager {
         if ("server-heartbeat".equals(type)) {
             lastPcServerHeartbeatAt = System.currentTimeMillis();
         } else if ("waiting".equals(type)) {
-            showStatus("Waiting for Petra", "The PC server is ready. Waiting for the second phone…");
+            showStatus("Waiting for companion", "The PC server is ready. Waiting for the second phone…");
         } else if ("peer".equals(type) && data != null) {
             String peerId = data.getString("client");
             String peerPublicKey = data.getString("pub");
