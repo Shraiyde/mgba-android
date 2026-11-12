@@ -14,6 +14,7 @@
 #include <mgba/internal/gba/sio.h>
 
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 
@@ -25,6 +26,8 @@ struct mAndroidLinkCable {
 	struct mPeerLink* link;
 	struct mTimingEvent pollEvent;
 	int deviceId;
+	atomic_int pendingDeviceId;
+	atomic_bool roleRefreshPending;
 	bool transferActive;
 	bool replyPending;
 	uint16_t localValue;
@@ -79,6 +82,15 @@ static void _poll(struct mTiming* timing, void* context, uint32_t cyclesLate) {
 	struct mAndroidLinkCable* cable = context;
 	if (!cable->link || !cable->driver.p)
 		return;
+
+	/* Role changes arrive from the UI/network thread. Apply them here on the
+	 * emulation thread and re-run mGBA mode selection so RCNT.SI is updated. */
+	if (atomic_exchange(&cable->roleRefreshPending, false)) {
+		cable->deviceId = atomic_load(&cable->pendingDeviceId);
+		struct GBASIO* sio = cable->driver.p;
+		sio->mode = (enum GBASIOMode) -1;
+		GBASIOWriteRCNT(sio, sio->rcnt);
+	}
 
 	if (cable->transferActive && mPeerLinkEpoch(cable->link) != cable->epoch) {
 		_complete(cable, 0xFFFF, cyclesLate);
@@ -203,6 +215,8 @@ struct mAndroidLinkCable* mAndroidLinkCableCreate(struct mPeerLink* link, bool h
 
 	cable->link = link;
 	cable->deviceId = host ? 0 : 1;
+	atomic_init(&cable->pendingDeviceId, host ? 0 : 1);
+	atomic_init(&cable->roleRefreshPending, false);
 	cable->driver.init = _init;
 	cable->driver.deinit = _deinit;
 	cable->driver.reset = _reset;
@@ -217,8 +231,10 @@ struct mAndroidLinkCable* mAndroidLinkCableCreate(struct mPeerLink* link, bool h
 }
 
 void mAndroidLinkCableSetRole(struct mAndroidLinkCable* cable, bool host) {
-	if (cable)
-		cable->deviceId = host ? 0 : 1;
+	if (!cable)
+		return;
+	atomic_store(&cable->pendingDeviceId, host ? 0 : 1);
+	atomic_store(&cable->roleRefreshPending, true);
 }
 
 void mAndroidLinkCableAttach(struct mCore* core, struct mAndroidLinkCable* cable) {
