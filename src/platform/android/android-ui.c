@@ -284,76 +284,10 @@ static struct {
 } overlayCache;
 
  
-#define DEBUG_LINE_COUNT 7
-static char debugLines[DEBUG_LINE_COUNT][192];
-static SDL_Surface* debugSurface;
-static SDL_Texture* debugTexture;
-static SDL_Renderer* debugRenderer;
-static int debugPanelWidth;
-static const int debugPanelHeight = 108;
-static uint64_t debugGeneration;
-static uint64_t debugUploadedGeneration = UINT64_MAX;
-
+// Retained as a no-op for callers that still publish diagnostic snapshots.
 void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char* frames, const char* thread, const char* video, const char* pace, const char* error) {
-	const char* values[DEBUG_LINE_COUNT] = { rom, load, frames, thread, video, pace, error };
-	int i;
-	for (i = 0; i < DEBUG_LINE_COUNT; ++i)
-		snprintf(debugLines[i], sizeof(debugLines[i]), "%s", values[i] ? values[i] : "");
-	++debugGeneration;
-}
-
-static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
-	// SDL textures belong to the renderer that created them. A recreated
-	// Activity/window must not reuse the previous renderer's debug texture.
-	if (debugRenderer != renderer) {
-		if (debugTexture) SDL_DestroyTexture(debugTexture);
-		if (debugSurface) SDL_FreeSurface(debugSurface);
-		debugTexture = NULL;
-		debugSurface = NULL;
-		debugPanelWidth = 0;
-		debugUploadedGeneration = UINT64_MAX;
-		debugRenderer = renderer;
-	}
-	int width = windowWidth - 16;
-	if (width > 760) width = 760;
-	if (width < 160) return;
-	if (!debugSurface || debugPanelWidth != width) {
-		if (debugTexture) SDL_DestroyTexture(debugTexture);
-		if (debugSurface) SDL_FreeSurface(debugSurface);
-		debugTexture = NULL;
-		debugUploadedGeneration = UINT64_MAX;
-		debugSurface = _makeSurface(width, debugPanelHeight);
-		debugPanelWidth = width;
-		if (debugSurface)
-			debugTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, debugPanelHeight);
-		if (!debugSurface || !debugTexture) {
-			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay allocation failed: %s", SDL_GetError());
-			if (debugTexture) SDL_DestroyTexture(debugTexture);
-			if (debugSurface) SDL_FreeSurface(debugSurface);
-			debugTexture = NULL;
-			debugSurface = NULL;
-			return;
-		}
-		SDL_SetTextureBlendMode(debugTexture, SDL_BLENDMODE_BLEND);
-	}
-	// The status text changes only when the 500 ms diagnostics snapshot is
-	// refreshed. Re-uploading this panel on every game frame wastes CPU and
-	// texture bandwidth without changing a pixel.
-	if (debugUploadedGeneration != debugGeneration) {
-		Uint32 background = SDL_MapRGBA(debugSurface->format, 0, 0, 0, 220);
-		Uint32 foreground = SDL_MapRGBA(debugSurface->format, 255, 255, 255, 255);
-		SDL_FillRect(debugSurface, NULL, background);
-		int i;
-		for (i = 0; i < DEBUG_LINE_COUNT; ++i)
-			_blitText(debugSurface, debugLines[i], 6, 4 + i * 14, 1, foreground);
-		if (SDL_UpdateTexture(debugTexture, NULL, debugSurface->pixels, debugSurface->pitch) < 0) {
-			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay update failed: %s", SDL_GetError());
-			return;
-		}
-		debugUploadedGeneration = debugGeneration;
-	}
-	SDL_Rect panel = { 8, 8, width, debugPanelHeight };
-	SDL_RenderCopy(renderer, debugTexture, NULL, &panel);
+	(void) rom; (void) load; (void) frames; (void) thread;
+	(void) video; (void) pace; (void) error;
 }
 
 static void _freeOverlayCache(void) {
@@ -462,15 +396,6 @@ void mAndroidOverlaySetWindow(SDL_Window* window) {
 		}
 	}
 	overlay.window = window;
-	if (!window) {
-		if (debugTexture) SDL_DestroyTexture(debugTexture);
-		if (debugSurface) SDL_FreeSurface(debugSurface);
-		debugTexture = NULL;
-		debugSurface = NULL;
-		debugRenderer = NULL;
-		debugPanelWidth = 0;
-		debugUploadedGeneration = UINT64_MAX;
-	}
 	if (!overlay.touchesInitialized) {
 		int i;
 		for (i = 0; i < MAX_TOUCHES; ++i)
@@ -561,7 +486,9 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 		if (overlay.touches[i].joystick) {
 			int dx = x - (stick.x + stickRadius), dy = y - (stick.y + stickRadius);
 			SDL_Keycode next = SDLK_UNKNOWN;
-			if (event->type != SDL_FINGERUP && dx * dx + dy * dy <= stickRadius * stickRadius &&
+			// Keep ownership of this finger after it leaves the stick's hit area.
+			// SDL continues delivering motion for the active finger until release.
+			if (event->type != SDL_FINGERUP &&
 				dx * dx + dy * dy >= (int) (stickRadius * stickRadius * JOYSTICK_DEADZONE * JOYSTICK_DEADZONE))
 				next = abs(dx) > abs(dy) ? (dx < 0 ? SDLK_LEFT : SDLK_RIGHT) : (dy < 0 ? SDLK_UP : SDLK_DOWN);
 			if (next != overlay.touches[i].key) {
@@ -614,9 +541,7 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 	SDL_SetRenderDrawColor(renderer, 200, 200, 200, 150);
 	SDL_RenderFillRect(renderer, toggle);
-	if (overlay.hidden) {
-		int w, h; SDL_GetWindowSize(overlay.window, &w, &h); _drawDebugStatus(renderer, w); return;
-	}
+	if (overlay.hidden) return;
 	if (view) { overlay.lastView = *view; overlay.hasLastView = true; }
 	else overlay.hasLastView = false;
 	struct OverlayButton buttons[MAX_OVERLAY_BUTTONS];
@@ -667,5 +592,4 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	_blitText(surf, "4-WAY", cx - 20, cy - 8, 1, white);
 	if (SDL_UpdateTexture(overlayCache.texture, NULL, surf->pixels, surf->pitch) < 0) { SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay texture update failed: %s", SDL_GetError()); _freeOverlayCache(); return; }
 	if (SDL_RenderCopy(renderer, overlayCache.texture, NULL, NULL) < 0) SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay draw failed: %s", SDL_GetError());
-	_drawDebugStatus(renderer, w);
 }
