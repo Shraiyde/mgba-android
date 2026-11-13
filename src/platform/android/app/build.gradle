@@ -47,6 +47,15 @@ android {
 	}
 
 	signingConfigs {
+		// Shared co-op test key, committed so every build (CI or local,
+		// no matter who runs it) signs identically and installs as an
+		// update. Test key only: never use for a production release.
+		debug {
+			storeFile file('coop-debug.keystore')
+			storePassword 'coopdebug'
+			keyAlias 'coopdebug'
+			keyPassword 'coopdebug'
+		}
 		release {
 			if (keystorePropsFile.exists()) {
 				storeFile file(keystoreProps['storeFile'])
@@ -58,6 +67,9 @@ android {
 	}
 
 	buildTypes {
+		debug {
+			signingConfig signingConfigs.debug
+		}
 		release {
 			minifyEnabled false
 		pseudoLocalesEnabled false
