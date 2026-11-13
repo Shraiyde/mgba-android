@@ -667,6 +667,12 @@ void mPeerLinkSetConnected(struct mPeerLink* link, bool connected) {
 	if (!link)
 		return;
 	bool wasConnected = atomic_load(&link->connected);
+	if (connected == wasConnected) {
+		/* Steady re-apply: the SIO session is already in this state.
+		 * Leave the queues, counters and epoch alone; wiping them here
+		 * completes in-flight words as 0xFFFF and drops the ROM link. */
+		return;
+	}
 	atomic_store(&link->running, connected);
 	atomic_store(&link->connected, connected);
 	// Transport connectivity is not the same as an active GBA multiplayer

@@ -1077,10 +1077,17 @@ public final class PeerLinkManager {
         }
     }
 
-    /* A peer packet can set accepted false and true again before the core
-     * thread observes the gap. Force the native disconnect so the role and
-     * the SIO queues are rebuilt for this session. */
+    /* The native layer keys its SIO session off the link's own connected
+     * state and ignores steady re-applies, so a live session only needs a
+     * role refresh here. Never force a disconnect cycle: the two native
+     * calls usually coalesce into one apply, and a mid-cycle apply would
+     * wipe a live SIO session. */
     private synchronized void reopenNativeSession() {
+        boolean connected = accepted && (mqttConnected || directConnected);
+        if (connected && nativeConnected) {
+            nativePeerConnected(host);
+            return;
+        }
         if (nativeConnected) {
             nativeConnected = false;
             nativePeerDisconnected();

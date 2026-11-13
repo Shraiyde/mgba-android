@@ -449,16 +449,17 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 		return;
 	sAppliedPeerGeneration = generation;
 	connected = state == 1;
-	/* A new peer packet increments the generation even when the connected
-	 * flag never looks like it changed. Drop the previous native session
-	 * first so the role and both SIO queues belong to this session. */
-	if (sPeerSessionOpen && sPeerLink)
-		mPeerLinkSetConnected(sPeerLink, false);
-	sCoopLastMapSent = UINT32_MAX;
-	sCoopLastSioActive = UINT32_MAX;
-	sCoopLastConfigFrame = UINT32_MAX;
-	sCoopLastConfigSequence = UINT32_MAX;
-	sCoopPrevLocalSio = UINT32_MAX;
+	/* Steady re-applies (duplicate generation bumps, role re-announces)
+	 * must not disturb the live SIO session: wiping the queues completes
+	 * in-flight words as 0xFFFF and desynchronises the two phones.
+	 * mPeerLinkSetConnected skips the wipe unless connectivity changed. */
+	if (connected != sPeerSessionOpen) {
+		sCoopLastMapSent = UINT32_MAX;
+		sCoopLastSioActive = UINT32_MAX;
+		sCoopLastConfigFrame = UINT32_MAX;
+		sCoopLastConfigSequence = UINT32_MAX;
+		sCoopPrevLocalSio = UINT32_MAX;
+	}
 	sCoopHostRole = connected && host;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
