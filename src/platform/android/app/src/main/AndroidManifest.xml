@@ -9,6 +9,9 @@
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
 	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+	<!-- Lets saves/savestates live in shared Documents storage so they
+	     survive app uninstalls. Requested once at startup via Settings. -->
+	<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
 	<application
 		android:label="Heart &amp; Soul Co-op"

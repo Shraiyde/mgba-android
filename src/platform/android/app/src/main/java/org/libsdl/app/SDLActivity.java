@@ -26,8 +26,10 @@ import android.graphics.drawable.Drawable;
 import android.hardware.Sensor;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Message;
+import android.provider.Settings;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.Selection;
@@ -395,6 +397,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         mSingleton = this;
         SDL.setContext(this);
         PeerLinkManager.initialize(this);
+        requestAllFilesAccessOnce();
 
         mClipboardHandler = new SDLClipboardHandler();
 
@@ -449,6 +452,33 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                 Toast.makeText(this, "Unsupported ROM location. Use LOAD ROM to select it.", Toast.LENGTH_LONG).show();
             }
         }
+    }
+
+    /** Ask once for all-files access so saves live in shared Documents
+     * storage and survive app reinstalls. No-ops on old Android versions
+     * and after the user has already answered. */
+    private void requestAllFilesAccessOnce() {
+        if (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager())
+            return;
+        if (getPreferences(MODE_PRIVATE).getBoolean("askedAllFilesAccess", false))
+            return;
+        getPreferences(MODE_PRIVATE).edit().putBoolean("askedAllFilesAccess", true).apply();
+        runOnUiThread(() -> {
+            new AlertDialog.Builder(this)
+                .setTitle("Keep saves after updates?")
+                .setMessage("Saves live inside the app and are deleted with it on reinstall. Allow \"All files access\" once so saves move to shared Documents storage and survive updates.")
+                .setPositiveButton("Open Settings", (dialog, id) -> {
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    } catch (Exception e) {
+                        startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    }
+                })
+                .setNegativeButton("Later", null)
+                .show();
+        });
     }
 
     /** Launch Android's system document picker and stage the selected ROM in cache. */

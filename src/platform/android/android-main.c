@@ -35,6 +35,9 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <dirent.h>
 
 static struct mStandardLogger _logger;
 static struct mPeerLink* sPeerLink;
@@ -42,6 +45,67 @@ static pthread_mutex_t sPeerLinkPointerLock = PTHREAD_MUTEX_INITIALIZER;
 static struct mAndroidLinkCable* sLinkCable;
 
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
+
+static void mAndroidPublicSaveDir(char* out, size_t outSize) {
+	const char* external = getenv("EXTERNAL_STORAGE");
+	if (!external || !external[0])
+		external = "/sdcard";
+	snprintf(out, outSize, "%s/Documents/HnSCoop", external);
+}
+
+/* Copies saves/states stranded in the app-private staging dir to shared
+ * storage (only files missing there), so an update without uninstall does
+ * not orphan existing progress. Runs at ROM load, before autoload. */
+static void mAndroidMigrateSavesToPublic(const char* romPath) {
+	char srcDir[1024];
+	char dstDir[1024];
+	size_t len;
+	DIR* dir;
+	struct dirent* entry;
+
+	if (!romPath)
+		return;
+	snprintf(srcDir, sizeof(srcDir), "%s", romPath);
+	len = strlen(srcDir);
+	while (len > 0 && srcDir[len - 1] != '/')
+		srcDir[--len] = '\0';
+	if (len == 0)
+		return;
+	mAndroidPublicSaveDir(dstDir, sizeof(dstDir));
+	dir = opendir(srcDir);
+	if (!dir)
+		return;
+	while ((entry = readdir(dir)) != NULL) {
+		const char* name = entry->d_name;
+		size_t nameLen = strlen(name);
+		char src[1024];
+		char dst[1024];
+		FILE *in, *out;
+		char buf[8192];
+		size_t n;
+		if (name[0] == '.')
+			continue;
+		if (nameLen > 4 && (strcmp(name + nameLen - 4, ".gba") == 0 || strcmp(name + nameLen - 4, ".zip") == 0))
+			continue;
+		snprintf(dst, sizeof(dst), "%s/%s", dstDir, name);
+		if (access(dst, F_OK) == 0)
+			continue;
+		snprintf(src, sizeof(src), "%s/%s", srcDir, name);
+		in = fopen(src, "rb");
+		if (!in)
+			continue;
+		out = fopen(dst, "wb");
+		if (!out) {
+			fclose(in);
+			continue;
+		}
+		while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+			fwrite(buf, 1, n, out);
+		fclose(in);
+		fclose(out);
+	}
+	closedir(dir);
+}
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
 #define HNS_COOP_MAILBOX_VERSION 11
@@ -1005,6 +1069,15 @@ int main(int argc, char** argv) {
 	// the threaded scanline proxy from Android frame pacing.
 	mCoreConfigSetDefaultValue(&renderer.core->config, "threadedVideo", "0");
 	mCoreConfigLoadDefaults(&renderer.core->config, &opts);
+	/* Keep saves and savestates in shared Documents storage so they
+	 * survive app uninstalls. If the OS denies the location, the core
+	 * silently falls back to its internal directories. */
+	{
+		char publicSaveDir[1024];
+		mAndroidPublicSaveDir(publicSaveDir, sizeof(publicSaveDir));
+		mCoreConfigSetValue(&renderer.core->config, "savegamePath", publicSaveDir);
+		mCoreConfigSetValue(&renderer.core->config, "savestatePath", publicSaveDir);
+	}
 	mCoreLoadConfig(renderer.core);
 	// Override any persisted threaded-video preference for this diagnostic
 	// build. The core reads this setting when its emulation thread resets.
@@ -1191,6 +1264,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	SDL_Log("ROM loaded successfully: %s", args->fname);
 	if (sLinkCable)
 		mAndroidLinkCableAttach(renderer->core, sLinkCable);
+	mAndroidMigrateSavesToPublic(args->fname);
 	mCoreAutoloadSave(renderer->core);
 	mArgumentsApplyFileLoads(args, renderer->core);
 
