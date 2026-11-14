@@ -26,7 +26,8 @@ enum mPeerMessageType {
 	mPEER_MSG_SIO_MULTI = 23,
 	mPEER_MSG_WORLD_CONFIG = 26,
 	mPEER_MSG_WORLD_CONFIG_ACK = 27,
-	mPEER_MSG_SIO_RESYNC = 28
+	mPEER_MSG_SIO_RESYNC = 28,
+	mPEER_MSG_WORLD_CONFIG_BLOB = 29
 };
 
 /* While the transport is connected, an unanswered SIO word is held until the

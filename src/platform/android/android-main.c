@@ -44,8 +44,10 @@ static struct mAndroidLinkCable* sLinkCable;
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 10
-#define HNS_COOP_MAILBOX_SIZE 2196
+#define HNS_COOP_MAILBOX_VERSION 11
+#define HNS_COOP_MAILBOX_SIZE 2284
+#define HNS_COOP_CONFIG_BLOB_SIZE 44
+#define HNS_COOP_CONFIG_PAYLOAD_WORDS 12
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define HNS_COOP_VAR_QUEUE_SIZE 128
 #define HNS_COOP_OFF_GAME_READY 12
@@ -59,6 +61,8 @@ static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 #define HNS_COOP_OFF_LOCAL_FACING 2184
 #define HNS_COOP_OFF_REMOTE_FACING 2188
 #define HNS_COOP_OFF_PEER_LINK_READY 2192
+#define HNS_COOP_OFF_LOCAL_CONFIG 2196
+#define HNS_COOP_OFF_REMOTE_CONFIG 2240
 #define GBA_EWRAM_START 0x02000000
 #define GBA_EWRAM_END 0x02040000
 
@@ -347,13 +351,14 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
                 uint32_t configReady = core->busRead32(core, sCoopMailboxAddress + 2140);
                 if (configReady && (configReady != sCoopLastConfigSequence
                     || sCoopLastConfigFrame == UINT32_MAX || frame - sCoopLastConfigFrame >= 60)) {
-                    uint32_t config[4] = {
-                        htonl(core->busRead32(core, sCoopMailboxAddress + 2128)),
-                        htonl(core->busRead32(core, sCoopMailboxAddress + 2132)),
-                        htonl(core->busRead32(core, sCoopMailboxAddress + 2136)),
-                        htonl(configReady)
-                    };
-                    if (mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_CONFIG, config, sizeof(config))) {
+                    // Whole-ruleset blob: seq word followed by the ROM's
+                    // packed config region, word-swapped per word.
+                    uint32_t config[HNS_COOP_CONFIG_PAYLOAD_WORDS];
+                    int i;
+                    config[0] = htonl(configReady);
+                    for (i = 0; i < HNS_COOP_CONFIG_BLOB_SIZE / 4; i++)
+                        config[1 + i] = htonl(core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_CONFIG + (uint32_t)i * 4));
+                    if (mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_CONFIG_BLOB, config, sizeof(config))) {
                         sCoopLastConfigFrame = frame;
                         sCoopLastConfigSequence = configReady;
                     }
@@ -429,13 +434,13 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				}
 				if (peerEvent.type != mPEER_EVENT_MESSAGE)
 					continue;
-                if (peerEvent.messageType == mPEER_MSG_WORLD_CONFIG && !sCoopHostRole && peerEvent.size == 4 * sizeof(uint32_t)) {
-                    uint32_t config[4];
+                if (peerEvent.messageType == mPEER_MSG_WORLD_CONFIG_BLOB && !sCoopHostRole && peerEvent.size == HNS_COOP_CONFIG_PAYLOAD_WORDS * sizeof(uint32_t)) {
+                    uint32_t config[HNS_COOP_CONFIG_PAYLOAD_WORDS];
+                    int i;
                     memcpy(config, peerEvent.data, sizeof(config));
-                    core->busWrite32(core, sCoopMailboxAddress + 2144, ntohl(config[0]));
-                    core->busWrite32(core, sCoopMailboxAddress + 2148, ntohl(config[1]));
-                    core->busWrite32(core, sCoopMailboxAddress + 2152, ntohl(config[2]));
-                    uint32_t sequence = ntohl(config[3]);
+                    for (i = 0; i < HNS_COOP_CONFIG_BLOB_SIZE / 4; i++)
+                        core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_REMOTE_CONFIG + (uint32_t)i * 4, ntohl(config[1 + i]));
+                    uint32_t sequence = ntohl(config[0]);
                     core->busWrite32(core, sCoopMailboxAddress + 2156, sequence);
                     uint32_t ack = htonl(sequence);
                     mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_CONFIG_ACK, &ack, sizeof(ack));
