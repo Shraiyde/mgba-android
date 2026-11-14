@@ -246,7 +246,11 @@ internal static class Program
 
     private static async Task RouteFrame(string senderId, byte[] payload)
     {
-        if (payload.Length is < 28 or > 8192 || !Clients.TryGetValue(senderId, out var sender) || !sender.Connected)
+        // A frame is a 16-byte header plus 0..4096 bytes of payload. The old
+        // 28-byte floor silently dropped 24-byte SIO link words and 20-byte
+        // flag/var/ready/ack packets, so the GBA link handshake could never
+        // complete and no avatars ever spawned.
+        if (payload.Length is < 16 or > 8192 || !Clients.TryGetValue(senderId, out var sender) || !sender.Connected)
             return;
         ClientSlot? peer = Clients.Values.FirstOrDefault(c => c.Id != senderId && c.Connected);
         if (peer == null) return;
