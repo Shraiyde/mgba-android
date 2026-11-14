@@ -76,8 +76,12 @@ bool mPeerLinkIsConnected(struct mPeerLink* link);
 /* Non-blocking. Returns true only when the peer word is already queued. */
 bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t* remoteValue);
 /* Master side. seq is 0 until this side has actually transmitted its word.
- * startNs is CLOCK_MONOTONIC from the moment the GBA transfer began. */
-enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue, uint32_t* seq, uint64_t startNs, uint16_t* remoteValue);
+ * startNs optionally points at CLOCK_MONOTONIC from the moment the GBA
+ * transfer began; while the reply is pending, the identical word is
+ * retransmitted under the same sequence number each timeout interval so a
+ * lost relay frame cannot stall the session, and the clock is re-armed.
+ * Pass NULL to disable retransmission (single attempt). */
+enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue, uint32_t* seq, uint64_t* startNs, uint16_t* remoteValue);
 /* Slave side. Pops the next in-order word, or resets both queues on a gap. */
 enum mPeerSioResult mPeerLinkSioTake(struct mPeerLink* link, uint32_t* seq, uint16_t* remoteValue);
 bool mPeerLinkSioReply(struct mPeerLink* link, uint32_t seq, uint16_t localValue);

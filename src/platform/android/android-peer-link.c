@@ -516,9 +516,8 @@ uint32_t mPeerLinkEpoch(const struct mPeerLink* link) {
 	return link ? link->epoch : 0;
 }
 
-enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue, uint32_t* seq, uint64_t startNs, uint16_t* remoteValue) {
+enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue, uint32_t* seq, uint64_t* startNs, uint16_t* remoteValue) {
 	uint32_t waitGen;
-	(void) startNs;
 	if (!link || !seq || !remoteValue || !atomic_load(&link->connected))
 		return mPEER_SIO_OFFLINE;
 	/* The SIO word pipe stays open for the whole session. Map loads, solo
@@ -556,7 +555,17 @@ enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue
 	}
 	pthread_mutex_unlock(&link->lock);
 	/* While connected the peer's reply is always on its way. Keep waiting
-	 * for it instead of resyncing with a fabricated word. */
+	 * for it instead of resyncing with a fabricated word. If the wait
+	 * outlasts a relay round trip, resend the identical word under the
+	 * same sequence number; the peer dedupes by seq, so no phantom word
+	 * can enter the GBA checksum stream. */
+	if (startNs != NULL && *startNs != 0) {
+		uint64_t now = _monoNs();
+		if (now >= *startNs && now - *startNs >= MPEER_SIO_TIMEOUT_NS) {
+			if (_sendSioWord(link, *seq, localValue))
+				*startNs = now;
+		}
+	}
 	return mPEER_SIO_WAIT;
 }
 
@@ -601,7 +610,7 @@ bool mPeerLinkSioReply(struct mPeerLink* link, uint32_t seq, uint16_t localValue
 bool mPeerLinkExchangeU16(struct mPeerLink* link, uint16_t localValue, uint16_t* remoteValue) {
 	uint32_t seq = 0;
 	/* One non-blocking attempt. The link driver completes the transfer later. */
-	return mPeerLinkSioPoll(link, localValue, &seq, _monoNs(), remoteValue) == mPEER_SIO_READY;
+	return mPeerLinkSioPoll(link, localValue, &seq, NULL, remoteValue) == mPEER_SIO_READY;
 }
 
 void mPeerLinkStop(struct mPeerLink* link) {

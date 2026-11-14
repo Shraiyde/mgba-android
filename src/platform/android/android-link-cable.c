@@ -96,7 +96,7 @@ static void _poll(struct mTiming* timing, void* context, uint32_t cyclesLate) {
 		_complete(cable, 0xFFFF, cyclesLate);
 	} else if (cable->deviceId == 0 && cable->transferActive) {
 		uint16_t remote = 0xFFFF;
-		enum mPeerSioResult result = mPeerLinkSioPoll(cable->link, cable->localValue, &cable->seq, cable->startNs, &remote);
+		enum mPeerSioResult result = mPeerLinkSioPoll(cable->link, cable->localValue, &cable->seq, &cable->startNs, &remote);
 		if (result == mPEER_SIO_READY)
 			_complete(cable, remote, cyclesLate);
 		else if (result == mPEER_SIO_RESET || result == mPEER_SIO_OFFLINE)
