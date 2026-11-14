@@ -349,9 +349,9 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* st
 	if (landscape) {
 		sy = h - radius - unit / 2;
 	} else {
-		// Portrait: float the thumb controls about halfway up the screen
-		// instead of crowding the bottom edge.
-		sy = h / 2;
+		// Portrait: float the thumb controls between the game view and the
+		// bottom edge instead of crowding either end.
+		sy = h * 5 / 8;
 	}
 	if (view && sy - radius < view->y + view->h + unit / 2)
 		sy = landscape ? h - radius - 8 : view->y + view->h + unit / 2 + radius;
