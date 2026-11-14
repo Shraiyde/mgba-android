@@ -62,11 +62,10 @@ jobs:
         env:
           SDL2_SRC: ${{ runner.temp }}/SDL2
           APP_VERSION_CODE: ${{ github.run_number }}
-          # AGP locates the debug keystore at $ANDROID_SDK_HOME/.android when
-          # that variable is set (setup-android exports it), which bypasses the
-          # cached ~/.android/debug.keystore and mints a fresh key every build.
-          # Point it home so all builds share the cached key.
-          ANDROID_SDK_HOME: ${{ env.HOME }}
+          # AGP locates the debug keystore at $ANDROID_SDK_HOME/.android; without
+          # this it mints a fresh key outside the cached path on every build.
+          # Point it at the runner home so all builds share the cached key.
+          ANDROID_SDK_HOME: /home/runner
         run: ./build-apk.sh
 
       - name: Publish APK as a GitHub Release asset
