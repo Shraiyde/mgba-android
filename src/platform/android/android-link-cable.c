@@ -104,8 +104,11 @@ static void _poll(struct mTiming* timing, void* context, uint32_t cyclesLate) {
 	} else if (cable->deviceId != 0 && cable->replyPending) {
 		if (mPeerLinkSioReply(cable->link, cable->seq, cable->localValue))
 			_complete(cable, cable->heldRemote, cyclesLate);
-		else if (!mPeerLinkIsConnected(cable->link) || (_nowNs() - cable->startNs) >= MPEER_SIO_HOLD_NS)
+		else if (!mPeerLinkIsConnected(cable->link))
 			_complete(cable, 0xFFFF, cyclesLate);
+		/* While connected, keep retrying the reply. Completing with 0xFFFF
+		 * would inject a word the peer never sent and corrupt the GBA link
+		 * checksum, dropping the co-op session with a link error. */
 	} else if (cable->deviceId != 0) {
 		uint32_t seq = 0;
 		uint16_t remote = 0xFFFF;

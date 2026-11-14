@@ -29,12 +29,13 @@ enum mPeerMessageType {
 	mPEER_MSG_SIO_RESYNC = 28
 };
 
-/* A live exchange gives the other phone a few GBA frames to answer. The
- * core thread does not wait. Eight frames is long enough for a short broker
- * round trip and short enough that a lost word cannot stall the game. */
+/* While the transport is connected, an unanswered SIO word is held until the
+ * peer's real reply arrives. Map loads, solo battles, and slow relays only
+ * delay the reply; synthesizing a stand-in word would corrupt the GBA link
+ * checksum and drop the session, so the word pipe never fabricates data.
+ * The SIO-active flags still gate the ROM's co-op decisions (same-map
+ * battles) via POSITION messages, not the word pipe. */
 #define MPEER_SIO_TIMEOUT_NS (8ULL * 16744614ULL)
-/* Map loads clear the SIO-active flag. Hold an unsent or unanswered word
- * until the game publishes the flag again, then give up so busy cannot stick. */
 #define MPEER_SIO_HOLD_NS (2ULL * 1000000000ULL)
 
 enum mPeerSioResult {

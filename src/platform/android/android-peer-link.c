@@ -255,11 +255,6 @@ static bool _sendSioWord(struct mPeerLink* link, uint32_t seq, uint16_t value) {
 	return mPeerLinkSend(link, mPEER_MSG_SIO_MULTI, payload, sizeof(payload));
 }
 
-static void _sendResync(struct mPeerLink* link, uint32_t jump) {
-	uint32_t networkSeq = htonl(jump);
-	mPeerLinkSend(link, mPEER_MSG_SIO_RESYNC, &networkSeq, sizeof(networkSeq));
-}
-
 static uint64_t _monoNs(void) {
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -521,42 +516,19 @@ uint32_t mPeerLinkEpoch(const struct mPeerLink* link) {
 	return link ? link->epoch : 0;
 }
 
-static enum mPeerSioResult _resetBoth(struct mPeerLink* link, uint32_t jump) {
-	pthread_mutex_lock(&link->lock);
-	_applyResyncLocked(link, jump);
-	pthread_cond_broadcast(&link->sioCond);
-	pthread_mutex_unlock(&link->lock);
-	_sendResync(link, jump);
-	return mPEER_SIO_RESET;
-}
-
 enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue, uint32_t* seq, uint64_t startNs, uint16_t* remoteValue) {
-	bool live;
-	bool timedOut;
-	uint64_t now;
-	uint32_t minSeq = 0;
 	uint32_t waitGen;
+	(void) startNs;
 	if (!link || !seq || !remoteValue || !atomic_load(&link->connected))
 		return mPEER_SIO_OFFLINE;
-	now = _monoNs();
-	live = atomic_load(&link->localSioActive) && atomic_load(&link->remoteSioActive);
-	timedOut = startNs && now >= startNs && (now - startNs) >= (live ? MPEER_SIO_TIMEOUT_NS : MPEER_SIO_HOLD_NS);
+	/* The SIO word pipe stays open for the whole session. Map loads, solo
+	 * battles, and slow relays only delay the peer's reply, so a transfer
+	 * waits for the real word instead of resyncing: completing with a
+	 * fabricated 0xFFFF word would corrupt the GBA link checksum and drop
+	 * the co-op session with a link error. */
 
 	if (*seq == 0) {
 		uint32_t sendSeq;
-		if (timedOut) {
-			pthread_mutex_lock(&link->lock);
-			sendSeq = link->sioNextSend > link->sioNextRecv ? link->sioNextSend : link->sioNextRecv;
-			minSeq = _minQueuedSeq(link);
-			pthread_mutex_unlock(&link->lock);
-			if (minSeq > sendSeq)
-				sendSeq = minSeq;
-			if (!sendSeq)
-				sendSeq = 1;
-			return _resetBoth(link, sendSeq);
-		}
-		if (!live)
-			return mPEER_SIO_WAIT;
 		pthread_mutex_lock(&link->lock);
 		sendSeq = link->sioNextSend;
 		pthread_mutex_unlock(&link->lock);
@@ -582,12 +554,9 @@ enum mPeerSioResult mPeerLinkSioPoll(struct mPeerLink* link, uint16_t localValue
 		pthread_mutex_unlock(&link->lock);
 		return mPEER_SIO_READY;
 	}
-	minSeq = _minQueuedSeq(link);
 	pthread_mutex_unlock(&link->lock);
-	if (minSeq > *seq || timedOut) {
-		uint32_t jump = minSeq > *seq ? minSeq : *seq + 1;
-		return _resetBoth(link, jump);
-	}
+	/* While connected the peer's reply is always on its way. Keep waiting
+	 * for it instead of resyncing with a fabricated word. */
 	return mPEER_SIO_WAIT;
 }
 
@@ -595,18 +564,18 @@ enum mPeerSioResult mPeerLinkSioTake(struct mPeerLink* link, uint32_t* seq, uint
 	uint32_t minSeq;
 	if (!link || !seq || !remoteValue || !atomic_load(&link->connected))
 		return mPEER_SIO_OFFLINE;
-	if (!atomic_load(&link->localSioActive))
-		return mPEER_SIO_WAIT;
+	/* The slave replies with whatever its SEND register holds, even across
+	 * map loads and solo battles. The ROM still learns the peer's activity
+	 * from POSITION messages; gating the word pipe here only stalled the
+	 * master's transfers until a timeout corrupted the link checksum. */
 	pthread_mutex_lock(&link->lock);
 	minSeq = _minQueuedSeq(link);
 	if (!minSeq) {
 		pthread_mutex_unlock(&link->lock);
 		return mPEER_SIO_WAIT;
 	}
-	if (minSeq > link->sioNextRecv) {
-		pthread_mutex_unlock(&link->lock);
-		return _resetBoth(link, minSeq);
-	}
+	if (minSeq > link->sioNextRecv)
+		link->sioNextRecv = minSeq;
 	if (!_takeSeqLocked(link, minSeq, remoteValue)) {
 		pthread_mutex_unlock(&link->lock);
 		return mPEER_SIO_WAIT;

@@ -48,6 +48,8 @@ static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 #define HNS_COOP_MAILBOX_SIZE 2160
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define HNS_COOP_VAR_QUEUE_SIZE 128
+#define HNS_COOP_OFF_GAME_READY 12
+#define HNS_COOP_OFF_LOCAL_STORY_READY 2096
 #define GBA_EWRAM_START 0x02000000
 #define GBA_EWRAM_END 0x02040000
 
@@ -285,7 +287,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			 * map loader and follows an unspawned guest. Dropping transport
 			 * for this one frame makes the ROM close the link before that
 			 * loader runs. Later warps, after gameReady, keep the session. */
-			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + 2096);
+			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_GAME_READY);
 			uint32_t localSioNow = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
 			if (!gameReady && sCoopPrevLocalSio == 1 && localSioNow == 0)
 				transport = 0;
@@ -319,7 +321,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
                 }
             }
 			uint32_t localMapId = core->busRead32(core, sCoopMailboxAddress + 2104);
-			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + 2096) ? 1 : 0;
+			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_GAME_READY) ? 1 : 0;
 			uint32_t localSioActive = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
 			/* The initial GBA link handshake must run before gameReady can be
 			 * published. Treat the connected pre-handshake session as SIO-active;
@@ -331,7 +333,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				uint32_t networkState[2] = { htonl(localMapId), htonl(sioActive) };
 				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, sizeof(networkState))) {
 					sCoopLastMapSent = localMapId;
-					sCoopLastSioActive = localSioActive;
+					sCoopLastSioActive = sioActive;
 				}
 			}
 
@@ -363,7 +365,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 
 			// Keep advertising readiness until the peer confirms its initial
 			// story-state transfer is also complete.
-			uint32_t localReady = core->busRead32(core, sCoopMailboxAddress + 2096);
+			uint32_t localReady = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_STORY_READY);
 			if (localReady && frame % 60 == 0) {
 				uint32_t ready = htonl(1);
 				mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_READY, &ready, sizeof(ready));
