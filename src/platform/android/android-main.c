@@ -230,6 +230,25 @@ void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
 }
 
 
+static void mSDLAndroidGameRect(struct mSDLRenderer* renderer, SDL_Rect* dest) {
+	dest->w = renderer->viewportHeight * renderer->width / renderer->height;
+	dest->h = renderer->viewportHeight;
+	if (dest->w > renderer->viewportWidth) {
+		dest->w = renderer->viewportWidth;
+		dest->h = renderer->viewportWidth * renderer->height / renderer->width;
+	}
+	dest->x = (renderer->viewportWidth - dest->w) / 2;
+	if (renderer->viewportWidth < renderer->viewportHeight) {
+		// Portrait: pin the game screen under the top utility row so the
+		// bottom half stays clear for the thumbstick and buttons.
+		dest->y = mAndroidOverlayTopInset(renderer->viewportWidth, renderer->viewportHeight) + 8;
+		if (dest->y + dest->h > renderer->viewportHeight)
+			dest->y = renderer->viewportHeight - dest->h;
+	} else {
+		dest->y = (renderer->viewportHeight - dest->h) / 2;
+	}
+}
+
 static bool mSDLAndroidCoopHeader(struct mCore* core, uint32_t address) {
 	struct GBA* gba = (struct GBA*) core->board;
 	const uint32_t* ewram = gba ? gba->memory.wram : NULL;
@@ -683,14 +702,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			mCoreSyncWaitFrameEnd(&context->impl->sync);
 
 			SDL_Rect dest;
-			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
-			dest.h = renderer->viewportHeight;
-			if (dest.w > renderer->viewportWidth) {
-				dest.w = renderer->viewportWidth;
-				dest.h = renderer->viewportWidth * renderer->height / renderer->width;
-			}
-			dest.x = (renderer->viewportWidth - dest.w) / 2;
-			dest.y = (renderer->viewportHeight - dest.h) / 2;
+			mSDLAndroidGameRect(renderer, &dest);
 
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {
@@ -787,14 +799,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			stageStart = SDL_GetPerformanceCounter();
 
 			SDL_Rect dest;
-			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
-			dest.h = renderer->viewportHeight;
-			if (dest.w > renderer->viewportWidth) {
-				dest.w = renderer->viewportWidth;
-				dest.h = renderer->viewportWidth * renderer->height / renderer->width;
-			}
-			dest.x = (renderer->viewportWidth - dest.w) / 2;
-			dest.y = (renderer->viewportHeight - dest.h) / 2;
+			mSDLAndroidGameRect(renderer, &dest);
 
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {

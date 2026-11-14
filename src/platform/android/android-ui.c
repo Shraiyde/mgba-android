@@ -317,15 +317,31 @@ static void _pushKey(SDL_Keycode key, bool down) {
 #define MAX_OVERLAY_BUTTONS 8
 #define JOYSTICK_DEADZONE 0.22f
 
+static int _unit(int w, int h) {
+	bool landscape = w >= h;
+	int unit = (landscape ? h : w) / 8;
+	if (unit < 42) unit = 42;
+	if (unit > 88) unit = 88;
+	return unit;
+}
+
+int mAndroidOverlayTopInset(int w, int h) {
+	// Bottom edge of the top utility row (L/R, LINK, START/SELECT) so the
+	// game view can sit directly underneath it in portrait.
+	if (w <= 0 || h <= 0) return 0;
+	int unit = _unit(w, h);
+	int topY = 10;
+	int gap = unit / 3;
+	return topY + unit + gap + unit / 2;
+}
+
 static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* stick, int* stickRadius) {
 	int w, h;
 	if (!overlay.window) return 0;
 	SDL_GetWindowSize(overlay.window, &w, &h);
 	if (w <= 0 || h <= 0) return 0;
 	bool landscape = w >= h;
-	int unit = (landscape ? h : w) / 8;
-	if (unit < 42) unit = 42;
-	if (unit > 88) unit = 88;
+	int unit = _unit(w, h);
 	int n = 0;
 	int radius = unit * 2;
 	int sx = landscape ? unit * 3 : w / 4;
