@@ -44,12 +44,16 @@ static struct mAndroidLinkCable* sLinkCable;
 static int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args);
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 8
-#define HNS_COOP_MAILBOX_SIZE 2160
+#define HNS_COOP_MAILBOX_VERSION 9
+#define HNS_COOP_MAILBOX_SIZE 2176
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
 #define HNS_COOP_VAR_QUEUE_SIZE 128
 #define HNS_COOP_OFF_GAME_READY 12
 #define HNS_COOP_OFF_LOCAL_STORY_READY 2096
+#define HNS_COOP_OFF_LOCAL_X 2160
+#define HNS_COOP_OFF_LOCAL_Y 2164
+#define HNS_COOP_OFF_REMOTE_X 2168
+#define HNS_COOP_OFF_REMOTE_Y 2172
 #define GBA_EWRAM_START 0x02000000
 #define GBA_EWRAM_END 0x02040000
 
@@ -57,6 +61,8 @@ static uint32_t sCoopMailboxAddress;
 static uint32_t sCoopMailboxNextScan;
 static uint32_t sCoopLastMapSent = UINT32_MAX;
 static uint32_t sCoopLastSioActive = UINT32_MAX;
+static uint32_t sCoopLastXSent = UINT32_MAX;
+static uint32_t sCoopLastYSent = UINT32_MAX;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static bool sCoopHostRole;
@@ -301,6 +307,8 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			core->busWrite32(core, sCoopMailboxAddress + 2156, 0);
 			sCoopLastMapSent = UINT32_MAX;
 			sCoopLastSioActive = UINT32_MAX;
+			sCoopLastXSent = UINT32_MAX;
+			sCoopLastYSent = UINT32_MAX;
 		}
 
 		if (connected) {
@@ -323,17 +331,22 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			uint32_t localMapId = core->busRead32(core, sCoopMailboxAddress + 2104);
 			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_GAME_READY) ? 1 : 0;
 			uint32_t localSioActive = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
+			uint32_t localX = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_X);
+			uint32_t localY = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_Y);
 			/* The initial GBA link handshake must run before gameReady can be
 			 * published. Treat the connected pre-handshake session as SIO-active;
 			 * once the handshake completes, honor the ROM's map/battle activity bit. */
 			uint32_t sioActive = localSioActive || !gameReady;
 			if (sioActive != sCoopLastSioActive)
 				mPeerLinkSetLocalSioActive(sPeerLink, sioActive != 0);
-			if (localMapId != sCoopLastMapSent || sioActive != sCoopLastSioActive || frame % 30 == 0) {
-				uint32_t networkState[2] = { htonl(localMapId), htonl(sioActive) };
+			if (localMapId != sCoopLastMapSent || sioActive != sCoopLastSioActive
+				|| localX != sCoopLastXSent || localY != sCoopLastYSent || frame % 30 == 0) {
+				uint32_t networkState[4] = { htonl(localMapId), htonl(sioActive), htonl(localX), htonl(localY) };
 				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, sizeof(networkState))) {
 					sCoopLastMapSent = localMapId;
 					sCoopLastSioActive = sioActive;
+					sCoopLastXSent = localX;
+					sCoopLastYSent = localY;
 				}
 			}
 
@@ -397,6 +410,16 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
                     core->busWrite32(core, sCoopMailboxAddress + 2156, ntohl(networkSequence));
                     continue;
                 }
+				if (peerEvent.messageType == mPEER_MSG_POSITION && peerEvent.size == 4 * sizeof(uint32_t)) {
+					uint32_t networkState[4];
+					memcpy(networkState, peerEvent.data, sizeof(networkState));
+					core->busWrite32(core, sCoopMailboxAddress + 2108, ntohl(networkState[0]));
+					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);
+					core->busWrite32(core, sCoopMailboxAddress + 2120, ntohl(networkState[1]) ? 1 : 0);
+					core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_REMOTE_X, ntohl(networkState[2]));
+					core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_REMOTE_Y, ntohl(networkState[3]));
+					continue;
+				}
 				if (peerEvent.messageType == mPEER_MSG_POSITION && peerEvent.size == 2 * sizeof(uint32_t)) {
 					uint32_t networkState[2];
 					memcpy(networkState, peerEvent.data, sizeof(networkState));
@@ -458,6 +481,8 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 		mPeerLinkSetConnected(sPeerLink, false);
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
+	sCoopLastXSent = UINT32_MAX;
+	sCoopLastYSent = UINT32_MAX;
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopLastConfigSequence = UINT32_MAX;
 	sCoopPrevLocalSio = UINT32_MAX;
@@ -1028,6 +1053,8 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	sCoopMailboxNextScan = 0;
 	sCoopLastMapSent = UINT32_MAX;
 	sCoopLastSioActive = UINT32_MAX;
+	sCoopLastXSent = UINT32_MAX;
+	sCoopLastYSent = UINT32_MAX;
 
 	// No ROM is a normal startup state. Keep SDL, the renderer, touch controls,
 	// and peer-link UI alive while the user chooses a game with the on-screen
