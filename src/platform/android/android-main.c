@@ -58,7 +58,6 @@ static uint32_t sCoopLastSioActive = UINT32_MAX;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static bool sCoopHostRole;
-static uint32_t sCoopPrevLocalSio = UINT32_MAX;
 static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
 static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
 static atomic_uint sPeerGeneration;
@@ -249,7 +248,6 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	if (sCoopMailboxAddress && !mSDLAndroidCoopHeader(core, sCoopMailboxAddress)) {
 		sCoopMailboxAddress = 0;
 		sCoopMailboxNextScan = frame;
-		sCoopPrevLocalSio = UINT32_MAX;
 	}
 	if (!sCoopMailboxAddress && frame >= sCoopMailboxNextScan) {
 		sCoopMailboxNextScan = frame + 30;
@@ -277,19 +275,26 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 
 	if (sCoopMailboxAddress) {
 		uint32_t transport = connected ? 1 : 0;
-		if (!connected) {
-			sCoopPrevLocalSio = UINT32_MAX;
-		} else {
-			/* gameReady stays 0 until the link handshake has actually produced
-			 * the other player. The first warp in that window uses the link
-			 * map loader and follows an unspawned guest. Dropping transport
-			 * for this one frame makes the ROM close the link before that
-			 * loader runs. Later warps, after gameReady, keep the session. */
-			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + 2096);
+		/* gameReady is the mailbox field at +12. It stays 0 until the
+		 * handshake has actually produced the other player. While this map
+		 * is loading (local SIO inactive) and that handshake is not done,
+		 * sCoopLinkStarted must stay clear. The link map loader follows an
+		 * unspawned guest and the ROM resets to the menu. The flag is the
+		 * byte the ROM places immediately before the mailbox. */
+		if (connected) {
+			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + 12);
 			uint32_t localSioNow = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
-			if (!gameReady && sCoopPrevLocalSio == 1 && localSioNow == 0)
-				transport = 0;
-			sCoopPrevLocalSio = localSioNow;
+			/* localSioActive is cleared at CB2_LoadMap and published again
+			 * only after the new map's overworld is running. Hold the link
+			 * flag clear for that whole window. The byte is EWRAM beside the
+			 * mailbox, never cartridge save RAM. */
+			uint32_t flagAddress = sCoopMailboxAddress - 5;
+			if (gameReady == 0 && localSioNow == 0
+				&& flagAddress >= GBA_EWRAM_START && flagAddress < sCoopMailboxAddress) {
+				uint8_t flag = core->busRead8(core, flagAddress);
+				if (flag <= 1)
+					core->busWrite8(core, flagAddress, 0);
+			}
 		}
 		core->busWrite32(core, sCoopMailboxAddress + 8, transport);
 		core->busWrite32(core, sCoopMailboxAddress + 2124, sCoopHostRole ? 1 : 0);
@@ -453,7 +458,6 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 	sCoopLastSioActive = UINT32_MAX;
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopLastConfigSequence = UINT32_MAX;
-	sCoopPrevLocalSio = UINT32_MAX;
 	sCoopHostRole = connected && host;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
@@ -603,6 +607,30 @@ static void mSDLAndroidPaceFrame(struct timespec* nextFrame) {
 	nextFrame->tv_nsec = (long) (nextNs % 1000000000ULL);
 }
 
+static void mSDLAndroidGameDest(const struct mSDLRenderer* renderer, SDL_Rect* dest) {
+	int vw = renderer->viewportWidth;
+	int vh = renderer->viewportHeight;
+	int gw = (int) renderer->width;
+	int gh = (int) renderer->height;
+	int areaW = vw;
+	int areaH = vh;
+	if (vw <= 0 || vh <= 0 || gw <= 0 || gh <= 0) {
+		dest->x = dest->y = dest->w = dest->h = 0;
+		return;
+	}
+	/* Portrait keeps the game in the top band. The touch controls use the rest. */
+	if (vh > vw)
+		areaH = vh * 58 / 100;
+	dest->w = areaH * gw / gh;
+	dest->h = areaH;
+	if (dest->w > areaW) {
+		dest->w = areaW;
+		dest->h = areaW * gh / gw;
+	}
+	dest->x = (areaW - dest->w) / 2;
+	dest->y = vh > vw ? (areaH - dest->h) / 2 : (vh - dest->h) / 2;
+}
+
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 	struct mCoreThread* context = user;
 	SDL_Event event;
@@ -651,14 +679,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			mCoreSyncWaitFrameEnd(&context->impl->sync);
 
 			SDL_Rect dest;
-			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
-			dest.h = renderer->viewportHeight;
-			if (dest.w > renderer->viewportWidth) {
-				dest.w = renderer->viewportWidth;
-				dest.h = renderer->viewportWidth * renderer->height / renderer->width;
-			}
-			dest.x = (renderer->viewportWidth - dest.w) / 2;
-			dest.y = (renderer->viewportHeight - dest.h) / 2;
+			mSDLAndroidGameDest(renderer, &dest);
 
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {
@@ -755,14 +776,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			stageStart = SDL_GetPerformanceCounter();
 
 			SDL_Rect dest;
-			dest.w = renderer->viewportHeight * renderer->width / renderer->height;
-			dest.h = renderer->viewportHeight;
-			if (dest.w > renderer->viewportWidth) {
-				dest.w = renderer->viewportWidth;
-				dest.h = renderer->viewportWidth * renderer->height / renderer->width;
-			}
-			dest.x = (renderer->viewportWidth - dest.w) / 2;
-			dest.y = (renderer->viewportHeight - dest.h) / 2;
+			mSDLAndroidGameDest(renderer, &dest);
 
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {

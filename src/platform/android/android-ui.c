@@ -278,6 +278,7 @@ static struct {
 	SDL_Texture* texture;
 	int width;
 	int height;
+	int viewKey;
 } overlayCache;
 
  
@@ -384,21 +385,34 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	} else {
 		return 0;
 	}
-	bool landscape = w >= h;
-	int cell = (landscape ? h : w) / 12;
-	if (cell < 40) {
-		cell = 40;
+	bool portrait = h > w;
+	int cell = (portrait ? w : h) / 12;
+	cell = cell * 7 / 5; /* about 1.4x the previous buttons */
+	if (cell < 56) {
+		cell = 56;
 	}
-	if (cell > 90) {
-		cell = 90;
+	if (cell > 126) {
+		cell = 126;
 	}
-	int r = cell; // dpad radius in cells
 	int n = 0;
+	int bandTop = 0;
+	if (portrait) {
+		bandTop = view && view->h > 0 ? view->y + view->h + cell / 5 : h * 58 / 100;
+		if (bandTop > h - cell * 5)
+			bandTop = h - cell * 5;
+		if (bandTop < 0)
+			bandTop = 0;
+	}
 
-	int dpx = landscape ? cell * 4 : w / 4;
-	int dpy = landscape ? h - cell * 5 : h - cell * 5;
-	if (view && dpy < view->y + view->h + cell * 3) {
+	int dpx = portrait ? w / 4 : cell * 4;
+	int dpy = portrait ? bandTop + (h - bandTop) / 2 : h - cell * 5;
+	if (!portrait && view && dpy < view->y + view->h + cell * 3)
 		dpy = h - cell * 4;
+	if (portrait) {
+		if (dpy - cell - cell / 2 < bandTop)
+			dpy = bandTop + cell + cell / 2;
+		if (dpy + cell + cell / 2 > h - cell)
+			dpy = h - cell * 2 - cell / 2;
 	}
 	// D-pad cross (up, down, left, right)
 	out[n].rect.x = dpx - cell / 2;
@@ -431,7 +445,7 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	++n;
 
 	// A / B
-	int abx = landscape ? w - cell * 4 : w * 3 / 4;
+	int abx = portrait ? w * 3 / 4 : w - cell * 4;
 	int aby = dpy;
 	out[n].rect.x = abx + cell / 2;
 	out[n].rect.y = aby - cell - cell / 2;
@@ -448,16 +462,17 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	out[n].label = "B";
 	++n;
 
-	// L / R
+	// L / R. In portrait these sit at the top of the control band, under the game.
+	int shoulderY = portrait ? bandTop : 8;
 	out[n].rect.x = cell / 2;
-	out[n].rect.y = 8;
+	out[n].rect.y = shoulderY;
 	out[n].rect.w = cell * 2;
 	out[n].rect.h = cell;
 	out[n].key = SDLK_a;
 	out[n].label = "L";
 	++n;
 	out[n].rect.x = w - cell * 2 - cell / 2;
-	out[n].rect.y = 8;
+	out[n].rect.y = shoulderY;
 	out[n].rect.w = cell * 2;
 	out[n].rect.h = cell;
 	out[n].key = SDLK_s;
@@ -466,9 +481,8 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 
 	// Start / Select
 	int sy = dpy + cell * 2;
-	if (sy + cell > h) {
-		sy = h - cell;
-	}
+	if (sy + cell / 2 > h)
+		sy = h - cell / 2;
 	out[n].rect.x = w / 2 - cell * 2;
 	out[n].rect.y = sy;
 	out[n].rect.w = cell * 2;
@@ -476,7 +490,7 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	out[n].key = SDLK_RETURN;
 	out[n].label = "START";
 	++n;
-	out[n].rect.x = w / 2 + cell * 0.5f;
+	out[n].rect.x = w / 2 + cell / 2;
 	out[n].rect.y = sy;
 	out[n].rect.w = cell * 2;
 	out[n].rect.h = cell / 2;
@@ -487,7 +501,7 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 	// Manual ROM selection remains available until a game has loaded.
 	if (!overlay.romLoaded) {
 		out[n].rect.x = w / 2 - cell * 2;
-		out[n].rect.y = cell + 16;
+		out[n].rect.y = portrait ? bandTop + cell : cell + 16;
 		out[n].rect.w = cell * 4;
 		out[n].rect.h = cell;
 		out[n].key = SDLK_F14;
@@ -497,7 +511,7 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
 
 	// Always-visible co-op entry point, separate from the emulator buttons.
 	out[n].rect.x = w / 2 - cell;
-	out[n].rect.y = 8;
+	out[n].rect.y = portrait ? bandTop : 8;
 	out[n].rect.w = cell * 2;
 	out[n].rect.h = cell;
 	out[n].key = SDLK_F13;
@@ -699,7 +713,9 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 	if (w <= 0 || h <= 0) {
 		return;
 	}
-	if (overlayCache.renderer != renderer || overlayCache.width != w || overlayCache.height != h) {
+	int viewKey = view && view->h > 0 ? (view->y << 16) ^ view->h ^ view->w : -1;
+	if (overlayCache.renderer != renderer || overlayCache.width != w || overlayCache.height != h || overlayCache.viewKey != viewKey) {
+		overlayCache.viewKey = viewKey;
 		_freeOverlayCache();
 		overlayCache.renderer = renderer;
 		overlayCache.width = w;
@@ -720,9 +736,10 @@ void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
 		SDL_FillRect(surf, NULL, transparent);
 		Uint32 white = SDL_MapRGBA(surf->format, 0xFF, 0xFF, 0xFF, 0xF0);
 		for (i = 0; i < n; ++i) {
-			int tx = buttons[i].rect.x + (buttons[i].rect.w - 8 * 2) / 2;
-			int ty = buttons[i].rect.y + (buttons[i].rect.h - 8 * 2) / 2;
-			_blitText(surf, buttons[i].label, tx, ty, 2, white);
+			int scale = 3;
+			int tx = buttons[i].rect.x + (buttons[i].rect.w - 8 * scale) / 2;
+			int ty = buttons[i].rect.y + (buttons[i].rect.h - 8 * scale) / 2;
+			_blitText(surf, buttons[i].label, tx, ty, scale, white);
 		}
 		if (SDL_UpdateTexture(overlayCache.texture, NULL, surf->pixels, surf->pitch) < 0) {
 			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay texture update failed: %s", SDL_GetError());

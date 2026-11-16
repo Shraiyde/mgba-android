@@ -31,6 +31,7 @@ struct mAndroidLinkCable {
 	uint16_t heldRemote;
 	uint32_t seq;
 	uint32_t epoch;
+	uint32_t masterHandshakeSent;
 	uint64_t startNs;
 };
 
@@ -59,6 +60,26 @@ static void _complete(struct mAndroidLinkCable* cable, uint16_t remote, uint32_t
 	GBASIOMultiplayerFinishTransfer(cable->driver.p, data, cyclesLate);
 }
 
+/* Pokémon's overworld OpenLink never sets handshakeAsMaster, so the host
+ * keeps writing the slave handshake (0xB9A0) even after CheckMasterOrSlave
+ * has selected it. DoHandshake only finishes when slot 0 is 0x8FFF. Present
+ * that master handshake on the wire for the first few such words. */
+#define SLAVE_HANDSHAKE 0xB9A0
+#define MASTER_HANDSHAKE 0x8FFF
+
+static uint16_t _presentWord(struct mAndroidLinkCable* cable, uint16_t value) {
+	if (cable->deviceId == 0 && value == SLAVE_HANDSHAKE && cable->masterHandshakeSent < 8)
+		return MASTER_HANDSHAKE;
+	return value;
+}
+
+static void _noteMasterHandshake(struct mAndroidLinkCable* cable, uint16_t sent, uint16_t remote) {
+	if (cable->deviceId == 0 && sent == MASTER_HANDSHAKE
+		&& (remote == SLAVE_HANDSHAKE || remote == MASTER_HANDSHAKE)
+		&& cable->masterHandshakeSent < 8)
+		++cable->masterHandshakeSent;
+}
+
 static void _poll(struct mTiming* timing, void* context, uint32_t cyclesLate);
 
 static int32_t _pollDelay(struct mAndroidLinkCable* cable) {
@@ -81,12 +102,15 @@ static void _poll(struct mTiming* timing, void* context, uint32_t cyclesLate) {
 		return;
 
 	if (cable->transferActive && mPeerLinkEpoch(cable->link) != cable->epoch) {
+		cable->masterHandshakeSent = 0;
 		_complete(cable, 0xFFFF, cyclesLate);
 	} else if (cable->deviceId == 0 && cable->transferActive) {
 		uint16_t remote = 0xFFFF;
 		enum mPeerSioResult result = mPeerLinkSioPoll(cable->link, cable->localValue, &cable->seq, cable->startNs, &remote);
-		if (result == mPEER_SIO_READY)
+		if (result == mPEER_SIO_READY) {
+			_noteMasterHandshake(cable, cable->localValue, remote);
 			_complete(cable, remote, cyclesLate);
+		}
 		else if (result == mPEER_SIO_RESET || result == mPEER_SIO_OFFLINE)
 			_complete(cable, 0xFFFF, cyclesLate);
 	} else if (cable->deviceId != 0 && cable->replyPending) {
@@ -129,11 +153,29 @@ static void _deinit(struct GBASIODriver* driver) {
 		mTimingDeschedule(&cable->driver.p->p->timing, &cable->pollEvent);
 }
 
+static uint16_t _writeSIOCNT(struct GBASIODriver* driver, uint16_t value) {
+	struct mAndroidLinkCable* cable = _cable(driver);
+	/* CheckMasterOrSlave returns master only when SD is set, SI is clear,
+	 * and the multiplayer id is 0. The joiner keeps SD clear and SI set. */
+	if (cable->deviceId == 0) {
+		value = GBASIOMultiplayerSetId(value, 0);
+		value = GBASIOMultiplayerSetSlave(value, false);
+		value = GBASIOMultiplayerFillReady(value);
+	} else {
+		/* Joiner stays a slave: SI set, SD clear. */
+		value = GBASIOMultiplayerSetId(value, cable->deviceId > 0 ? cable->deviceId : 1);
+		value = GBASIOMultiplayerSetSlave(value, true);
+		value = GBASIOMultiplayerClearReady(value);
+	}
+	return value;
+}
+
 static void _reset(struct GBASIODriver* driver) {
 	struct mAndroidLinkCable* cable = _cable(driver);
 	cable->transferActive = false;
 	cable->replyPending = false;
 	cable->seq = 0;
+	cable->masterHandshakeSent = 0;
 	if (cable->driver.p) {
 		mTimingDeschedule(&cable->driver.p->p->timing, &cable->pollEvent);
 		_schedule(cable, &cable->driver.p->p->timing);
@@ -174,7 +216,7 @@ static bool _start(struct GBASIODriver* driver) {
 		return false;
 	if (!cable->link || !mPeerLinkIsConnected(cable->link))
 		return true;
-	cable->localValue = cable->driver.p->p->memory.io[GBA_REG(SIOMLT_SEND)];
+	cable->localValue = _presentWord(cable, cable->driver.p->p->memory.io[GBA_REG(SIOMLT_SEND)]);
 	cable->seq = 0;
 	cable->startNs = _nowNs();
 	cable->epoch = mPeerLinkEpoch(cable->link);
@@ -211,6 +253,7 @@ struct mAndroidLinkCable* mAndroidLinkCableCreate(struct mPeerLink* link, bool h
 	cable->driver.handlesMode = _handlesMode;
 	cable->driver.connectedDevices = _connectedDevices;
 	cable->driver.deviceId = _deviceId;
+	cable->driver.writeSIOCNT = _writeSIOCNT;
 	cable->driver.start = _start;
 	cable->driver.finishMultiplayer = _finishMultiplayer;
 	return cable;
