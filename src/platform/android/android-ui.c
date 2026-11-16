@@ -344,15 +344,15 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* st
 	bool landscape = w >= h;
 	int unit = _unit(w, h);
 	int n = 0;
-	/* Thumbstick stays at the pre-1.4x size; face/shoulder buttons use unit. */
+	/* Thumbstick size/placement match 65c184f80; face buttons keep the 1.4x unit. */
 	int stickUnit = (landscape ? h : w) / 8;
 	if (stickUnit < 42) stickUnit = 42;
 	if (stickUnit > 88) stickUnit = 88;
 	int radius = stickUnit * 2;
-	int sx = landscape ? unit * 3 : w / 4;
+	int sx = landscape ? stickUnit * 3 : w / 4;
 	int sy;
 	if (landscape) {
-		sy = h - radius - unit / 2;
+		sy = h - radius - stickUnit / 2;
 	} else {
 		// Portrait: float the thumb controls between the game view and the
 		// bottom edge instead of crowding either end.
@@ -366,11 +366,27 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* st
 	stick->h = radius * 2;
 	*stickRadius = radius;
 
+	/* Standard GBA diagonal: A upper-right, B lower-left, ~1/4-button gap. */
 	int abRadius = unit / 2;
-	int abx = landscape ? w - unit * 3 : w * 3 / 4;
-	int aby = sy;
-	out[n++] = (struct OverlayButton) {{abx + unit / 2, aby - abRadius, abRadius * 2, abRadius * 2}, SDLK_x, "A", true};
-	out[n++] = (struct OverlayButton) {{abx - abRadius * 2 - unit / 2, aby + unit / 5, abRadius * 2, abRadius * 2}, SDLK_z, "B", true};
+	int d = abRadius * 2;
+	int abGap = d / 4;
+	int margin = unit / 3;
+	int ax = w - margin - d;
+	int ay = sy - abRadius - abGap;
+	int bx = ax - (d / 2 + abGap);
+	int by = ay + (d / 2 + abGap);
+	int stickRight = sx + radius + stickUnit / 4;
+	if (bx < stickRight) {
+		int shift = stickRight - bx;
+		ax += shift;
+		bx += shift;
+		if (ax + d > w - margin) {
+			ax = w - margin - d;
+			bx = ax - (d / 2 + abGap);
+		}
+	}
+	out[n++] = (struct OverlayButton) {{ax, ay, d, d}, SDLK_x, "A", true};
+	out[n++] = (struct OverlayButton) {{bx, by, d, d}, SDLK_z, "B", true};
 
 	int topY = 10;
 	int shoulderW = unit * 3 / 2;
