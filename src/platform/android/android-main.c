@@ -381,15 +381,17 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		uint32_t transport = connected ? 1 : 0;
 		/* gameReady stays 0 until the handshake has produced the other
 		 * player. localSioActive is cleared at CB2_LoadMap and published
-		 * again only after the new map's overworld is running. Hold the
-		 * ROM's sCoopLinkStarted flag clear for that whole window so the
-		 * local map loader runs instead of following an unspawned guest.
-		 * The flag is the EWRAM byte immediately before the mailbox. */
+		 * again only after the new map's overworld is running. Before the
+		 * peer is present, hold sCoopLinkStarted clear for that window so
+		 * the local map loader runs instead of following an unspawned
+		 * guest. Once peer presence is established, stop clearing — later
+		 * warps must keep the link avatar path alive on every map. */
 		if (connected) {
 			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_GAME_READY);
 			uint32_t localSioNow = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
+			uint32_t peerPresent = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY);
 			uint32_t flagAddress = sCoopMailboxAddress - 5;
-			if (gameReady == 0 && localSioNow == 0
+			if (gameReady == 0 && localSioNow == 0 && peerPresent == 0
 				&& flagAddress >= GBA_EWRAM_START && flagAddress < sCoopMailboxAddress) {
 				uint8_t flag = core->busRead8(core, flagAddress);
 				if (flag <= 1)
@@ -443,10 +445,9 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			uint32_t sioActive = localSioActive || !gameReady;
 			if (sioActive != sCoopLastSioActive)
 				mPeerLinkSetLocalSioActive(sPeerLink, sioActive != 0);
-			if (localMapId != sCoopLastMapSent || sioActive != sCoopLastSioActive
-				|| localX != sCoopLastXSent || localY != sCoopLastYSent
-				|| localGender != sCoopLastGenderSent || localFacing != sCoopLastFacingSent
-				|| frame % 30 == 0) {
+			/* Publish every frame so the peer starts each step immediately.
+			 * Map/facing/coord changes must never wait on a slow heartbeat. */
+			{
 				uint32_t networkState[6] = { htonl(localMapId), htonl(sioActive), htonl(localX), htonl(localY), htonl(localGender), htonl(localFacing) };
 				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, sizeof(networkState))) {
 					sCoopLastMapSent = localMapId;
@@ -570,9 +571,11 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			}
 
 			/* Presence expires when POSITION updates stop arriving (peer left,
-			 * stalled, or disconnected without a clean event). The ROM drops
-			 * the remote avatar until fresh positions resume. */
-			if (frame - sCoopLastPosFrame > 120)
+			 * stalled, or disconnected without a clean event). Do not expire
+			 * during a local map load (localSio clear) — the peer is often
+			 * quiet for the same window, and dropping presence there is what
+			 * made the avatar vanish after leaving the starting house. */
+			if (localSioActive && sCoopLastPosFrame != 0 && frame - sCoopLastPosFrame > 180)
 				core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 0);
 		}
 	}

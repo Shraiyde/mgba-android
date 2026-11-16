@@ -80,14 +80,15 @@ public final class PeerLinkManager {
     private static volatile PeerLinkManager instance;
     private static volatile boolean webRtcInitialized;
     // Native emulation/render threads must never wait on MQTT/WebRTC work.
-    // A single bounded sender preserves frame ordering and caps queued memory.
+    // Keep the queue short and drop the oldest frame under backpressure so
+    // live movement never builds seconds of delay (latest POSITION wins).
     private static final ThreadPoolExecutor frameSender = new ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(128),
+        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
         task -> {
             Thread thread = new Thread(task, "HNS-Peer-Send");
             thread.setDaemon(true);
             return thread;
-        }, new ThreadPoolExecutor.AbortPolicy());
+        }, new ThreadPoolExecutor.DiscardOldestPolicy());
 
     private final SecureRandom random = new SecureRandom();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -523,6 +524,8 @@ public final class PeerLinkManager {
             options.setCleanSession(true);
             options.setKeepAliveInterval(25);
             options.setConnectionTimeout(15);
+            // Live co-op frames use QoS 0; keep inflight headroom for signaling.
+            options.setMaxInflight(64);
             client.connect(options, null, new IMqttActionListener() {
                 @Override public void onSuccess(IMqttToken token) {
                     if (mqtt != client) return;
@@ -1020,14 +1023,16 @@ public final class PeerLinkManager {
             return false;
         try {
             byte[] encrypted = encryptFrame(frame);
+            // QoS 0: fire-and-forget. QoS 1 ACK round-trips batched movement
+            // into multi-second teleports on the peer phone.
             if (pcServerMode)
-                return publish(pcUpFrameTopic(), encrypted, 1, false);
+                return publish(pcUpFrameTopic(), encrypted, 0, false);
             if (directConnected && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {
                 if (dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true)))
                     return true;
             }
             if (mqttConnected)
-                return publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 1, false);
+                return publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 0, false);
         } catch (Exception ignored) {}
         return false;
     }
