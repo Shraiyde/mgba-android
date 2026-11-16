@@ -80,8 +80,11 @@ public final class PeerLinkManager {
     private static volatile PeerLinkManager instance;
     private static volatile boolean webRtcInitialized;
     // Native emulation/render threads must never wait on MQTT/WebRTC work.
-    // Keep the queue short and drop the oldest frame under backpressure so
-    // live movement never builds seconds of delay (latest POSITION wins).
+    // One sender thread preserves wire order. SIO link words use a deeper
+    // AbortPolicy queue so DiscardOldest never drops battle transfers under
+    // POSITION/mailbox backpressure; other frames stay coalesced/short.
+    private static final int PEER_HDR_TYPE_OFFSET = 6;
+    private static final int MPEER_MSG_SIO_MULTI = 23;
     private static final ThreadPoolExecutor frameSender = new ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
         task -> {
@@ -89,6 +92,13 @@ public final class PeerLinkManager {
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.DiscardOldestPolicy());
+    private static final ThreadPoolExecutor sioFrameSender = new ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64),
+        task -> {
+            Thread thread = new Thread(task, "HNS-Peer-SIO");
+            thread.setDaemon(true);
+            return thread;
+        }, new ThreadPoolExecutor.AbortPolicy());
 
     private final SecureRandom random = new SecureRandom();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -1047,6 +1057,14 @@ public final class PeerLinkManager {
         }
     }
 
+    private static boolean isSioMultiFrame(byte[] frame) {
+        if (frame == null || frame.length < PEER_HDR_TYPE_OFFSET + 2)
+            return false;
+        int type = ((frame[PEER_HDR_TYPE_OFFSET] & 0xFF) << 8)
+            | (frame[PEER_HDR_TYPE_OFFSET + 1] & 0xFF);
+        return type == MPEER_MSG_SIO_MULTI;
+    }
+
     public static boolean sendFrame(byte[] frame) {
         PeerLinkManager manager = instance;
         if (manager == null || frame == null || frame.length > MAX_PEER_FRAME_SIZE
@@ -1054,8 +1072,9 @@ public final class PeerLinkManager {
             return false;
         final byte[] queuedFrame = frame.clone();
         final byte[] queuedSessionKey = manager.sessionKey;
+        ThreadPoolExecutor executor = isSioMultiFrame(frame) ? sioFrameSender : frameSender;
         try {
-            frameSender.execute(() -> manager.sendFrameInternal(queuedFrame, queuedSessionKey));
+            executor.execute(() -> manager.sendFrameInternal(queuedFrame, queuedSessionKey));
             return true;
         } catch (RejectedExecutionException full) {
             return false;
@@ -1287,6 +1306,7 @@ public final class PeerLinkManager {
 
     private void closeCurrentSession(boolean clearPreferences) {
         frameSender.getQueue().clear();
+        sioFrameSender.getQueue().clear();
         boolean wasConnected = nativeConnected;
         retryEnabled = false;
         Activity currentActivity = activity;

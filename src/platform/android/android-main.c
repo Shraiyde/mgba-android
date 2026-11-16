@@ -445,9 +445,13 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			uint32_t sioActive = localSioActive || !gameReady;
 			if (sioActive != sCoopLastSioActive)
 				mPeerLinkSetLocalSioActive(sPeerLink, sioActive != 0);
-			/* Publish every frame so the peer starts each step immediately.
-			 * Map/facing/coord changes must never wait on a slow heartbeat. */
-			{
+			/* Send on change immediately; otherwise every 4 frames. Full every-
+			 * frame publish flooded the P2P queue and made DiscardOldest drop
+			 * SIO battle words under movement traffic. */
+			if (localMapId != sCoopLastMapSent || sioActive != sCoopLastSioActive
+				|| localX != sCoopLastXSent || localY != sCoopLastYSent
+				|| localGender != sCoopLastGenderSent || localFacing != sCoopLastFacingSent
+				|| (frame % 4) == 0) {
 				uint32_t networkState[6] = { htonl(localMapId), htonl(sioActive), htonl(localX), htonl(localY), htonl(localGender), htonl(localFacing) };
 				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, sizeof(networkState))) {
 					sCoopLastMapSent = localMapId;
