@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -257,6 +258,7 @@ struct OverlayButton {
 	SDL_Rect rect;
 	SDL_Keycode key;
 	const char* label;
+	bool round;
 };
 
 static struct {
@@ -265,6 +267,7 @@ static struct {
 	struct {
 		Sint64 id;
 		SDL_Keycode key;
+		bool joystick;
 	} touches[MAX_TOUCHES];
     SDL_Rect lastView;
     bool hasLastView;
@@ -278,80 +281,13 @@ static struct {
 	SDL_Texture* texture;
 	int width;
 	int height;
-	int viewKey;
 } overlayCache;
 
  
-#define DEBUG_LINE_COUNT 7
-static char debugLines[DEBUG_LINE_COUNT][192];
-static SDL_Surface* debugSurface;
-static SDL_Texture* debugTexture;
-static SDL_Renderer* debugRenderer;
-static int debugPanelWidth;
-static const int debugPanelHeight = 108;
-static uint64_t debugGeneration;
-static uint64_t debugUploadedGeneration = UINT64_MAX;
-
+// Retained as a no-op for callers that still publish diagnostic snapshots.
 void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char* frames, const char* thread, const char* video, const char* pace, const char* error) {
-	const char* values[DEBUG_LINE_COUNT] = { rom, load, frames, thread, video, pace, error };
-	int i;
-	for (i = 0; i < DEBUG_LINE_COUNT; ++i)
-		snprintf(debugLines[i], sizeof(debugLines[i]), "%s", values[i] ? values[i] : "");
-	++debugGeneration;
-}
-
-static void _drawDebugStatus(SDL_Renderer* renderer, int windowWidth) {
-	// SDL textures belong to the renderer that created them. A recreated
-	// Activity/window must not reuse the previous renderer's debug texture.
-	if (debugRenderer != renderer) {
-		if (debugTexture) SDL_DestroyTexture(debugTexture);
-		if (debugSurface) SDL_FreeSurface(debugSurface);
-		debugTexture = NULL;
-		debugSurface = NULL;
-		debugPanelWidth = 0;
-		debugUploadedGeneration = UINT64_MAX;
-		debugRenderer = renderer;
-	}
-	int width = windowWidth - 16;
-	if (width > 760) width = 760;
-	if (width < 160) return;
-	if (!debugSurface || debugPanelWidth != width) {
-		if (debugTexture) SDL_DestroyTexture(debugTexture);
-		if (debugSurface) SDL_FreeSurface(debugSurface);
-		debugTexture = NULL;
-		debugUploadedGeneration = UINT64_MAX;
-		debugSurface = _makeSurface(width, debugPanelHeight);
-		debugPanelWidth = width;
-		if (debugSurface)
-			debugTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, debugPanelHeight);
-		if (!debugSurface || !debugTexture) {
-			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay allocation failed: %s", SDL_GetError());
-			if (debugTexture) SDL_DestroyTexture(debugTexture);
-			if (debugSurface) SDL_FreeSurface(debugSurface);
-			debugTexture = NULL;
-			debugSurface = NULL;
-			return;
-		}
-		SDL_SetTextureBlendMode(debugTexture, SDL_BLENDMODE_BLEND);
-	}
-	// The status text changes only when the 500 ms diagnostics snapshot is
-	// refreshed. Re-uploading this panel on every game frame wastes CPU and
-	// texture bandwidth without changing a pixel.
-	if (debugUploadedGeneration != debugGeneration) {
-		Uint32 background = SDL_MapRGBA(debugSurface->format, 0, 0, 0, 220);
-		Uint32 foreground = SDL_MapRGBA(debugSurface->format, 255, 255, 255, 255);
-		SDL_FillRect(debugSurface, NULL, background);
-		int i;
-		for (i = 0; i < DEBUG_LINE_COUNT; ++i)
-			_blitText(debugSurface, debugLines[i], 6, 4 + i * 14, 1, foreground);
-		if (SDL_UpdateTexture(debugTexture, NULL, debugSurface->pixels, debugSurface->pitch) < 0) {
-			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Debug overlay update failed: %s", SDL_GetError());
-			return;
-		}
-		debugUploadedGeneration = debugGeneration;
-	}
-	SDL_Rect panel = { 8, 8, width, debugPanelHeight };
-	SDL_RenderCopy(renderer, debugTexture, NULL, &panel);
+	(void) rom; (void) load; (void) frames; (void) thread;
+	(void) video; (void) pace; (void) error;
 }
 
 static void _freeOverlayCache(void) {
@@ -378,149 +314,76 @@ static void _pushKey(SDL_Keycode key, bool down) {
 	SDL_PushEvent(&event);
 }
 
-static int _layout(const SDL_Rect* view, struct OverlayButton* out) {
-	int w, h;
-	if (overlay.window) {
-		SDL_GetWindowSize(overlay.window, &w, &h);
-	} else {
-		return 0;
-	}
-	bool portrait = h > w;
-	int cell = (portrait ? w : h) / 12;
-	cell = cell * 7 / 5; /* about 1.4x the previous buttons */
-	if (cell < 56) {
-		cell = 56;
-	}
-	if (cell > 126) {
-		cell = 126;
-	}
-	int n = 0;
-	int bandTop = 0;
-	if (portrait) {
-		bandTop = view && view->h > 0 ? view->y + view->h + cell / 5 : h * 58 / 100;
-		if (bandTop > h - cell * 5)
-			bandTop = h - cell * 5;
-		if (bandTop < 0)
-			bandTop = 0;
-	}
+#define MAX_OVERLAY_BUTTONS 8
+#define JOYSTICK_DEADZONE 0.22f
 
-	int dpx = portrait ? w / 4 : cell * 4;
-	int dpy = portrait ? bandTop + (h - bandTop) / 2 : h - cell * 5;
-	if (!portrait && view && dpy < view->y + view->h + cell * 3)
-		dpy = h - cell * 4;
-	if (portrait) {
-		if (dpy - cell - cell / 2 < bandTop)
-			dpy = bandTop + cell + cell / 2;
-		if (dpy + cell + cell / 2 > h - cell)
-			dpy = h - cell * 2 - cell / 2;
-	}
-	// D-pad cross (up, down, left, right)
-	out[n].rect.x = dpx - cell / 2;
-	out[n].rect.y = dpy - cell - cell / 2;
-	out[n].rect.w = cell;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_UP;
-	out[n].label = "^";
-	++n;
-	out[n].rect.x = dpx - cell / 2;
-	out[n].rect.y = dpy + cell / 2;
-	out[n].rect.w = cell;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_DOWN;
-	out[n].label = "v";
-	++n;
-	out[n].rect.x = dpx - cell - cell / 2;
-	out[n].rect.y = dpy - cell / 2;
-	out[n].rect.w = cell;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_LEFT;
-	out[n].label = "<";
-	++n;
-	out[n].rect.x = dpx + cell / 2;
-	out[n].rect.y = dpy - cell / 2;
-	out[n].rect.w = cell;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_RIGHT;
-	out[n].label = ">";
-	++n;
-
-	// A / B
-	int abx = portrait ? w * 3 / 4 : w - cell * 4;
-	int aby = dpy;
-	out[n].rect.x = abx + cell / 2;
-	out[n].rect.y = aby - cell - cell / 2;
-	out[n].rect.w = cell;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_x;
-	out[n].label = "A";
-	++n;
-	out[n].rect.x = abx - cell - cell / 2;
-	out[n].rect.y = aby + cell / 2;
-	out[n].rect.w = cell;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_z;
-	out[n].label = "B";
-	++n;
-
-	// L / R. In portrait these sit at the top of the control band, under the game.
-	int shoulderY = portrait ? bandTop : 8;
-	out[n].rect.x = cell / 2;
-	out[n].rect.y = shoulderY;
-	out[n].rect.w = cell * 2;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_a;
-	out[n].label = "L";
-	++n;
-	out[n].rect.x = w - cell * 2 - cell / 2;
-	out[n].rect.y = shoulderY;
-	out[n].rect.w = cell * 2;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_s;
-	out[n].label = "R";
-	++n;
-
-	// Start / Select
-	int sy = dpy + cell * 2;
-	if (sy + cell / 2 > h)
-		sy = h - cell / 2;
-	out[n].rect.x = w / 2 - cell * 2;
-	out[n].rect.y = sy;
-	out[n].rect.w = cell * 2;
-	out[n].rect.h = cell / 2;
-	out[n].key = SDLK_RETURN;
-	out[n].label = "START";
-	++n;
-	out[n].rect.x = w / 2 + cell / 2;
-	out[n].rect.y = sy;
-	out[n].rect.w = cell * 2;
-	out[n].rect.h = cell / 2;
-	out[n].key = SDLK_BACKSPACE;
-	out[n].label = "SELECT";
-	++n;
-
-	// Manual ROM selection remains available until a game has loaded.
-	if (!overlay.romLoaded) {
-		out[n].rect.x = w / 2 - cell * 2;
-		out[n].rect.y = portrait ? bandTop + cell : cell + 16;
-		out[n].rect.w = cell * 4;
-		out[n].rect.h = cell;
-		out[n].key = SDLK_F14;
-		out[n].label = "LOAD ROM";
-		++n;
-	}
-
-	// Always-visible co-op entry point, separate from the emulator buttons.
-	out[n].rect.x = w / 2 - cell;
-	out[n].rect.y = portrait ? bandTop : 8;
-	out[n].rect.w = cell * 2;
-	out[n].rect.h = cell;
-	out[n].key = SDLK_F13;
-	out[n].label = "LINK";
-	++n;
-
-	return n;
+static int _unit(int w, int h) {
+	bool landscape = w >= h;
+	int unit = (landscape ? h : w) / 8;
+	if (unit < 42) unit = 42;
+	if (unit > 88) unit = 88;
+	return unit;
 }
 
+int mAndroidOverlayTopInset(int w, int h) {
+	// Bottom edge of the top utility row (L/R, LINK, START/SELECT) so the
+	// game view can sit directly underneath it in portrait.
+	if (w <= 0 || h <= 0) return 0;
+	int unit = _unit(w, h);
+	int topY = 10;
+	int gap = unit / 3;
+	return topY + unit + gap + unit / 2;
+}
+
+static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* stick, int* stickRadius) {
+	int w, h;
+	if (!overlay.window) return 0;
+	SDL_GetWindowSize(overlay.window, &w, &h);
+	if (w <= 0 || h <= 0) return 0;
+	bool landscape = w >= h;
+	int unit = _unit(w, h);
+	int n = 0;
+	int radius = unit * 2;
+	int sx = landscape ? unit * 3 : w / 4;
+	int sy;
+	if (landscape) {
+		sy = h - radius - unit / 2;
+	} else {
+		// Portrait: float the thumb controls between the game view and the
+		// bottom edge instead of crowding either end.
+		sy = h * 5 / 8;
+	}
+	if (view && sy - radius < view->y + view->h + unit / 2)
+		sy = landscape ? h - radius - 8 : view->y + view->h + unit / 2 + radius;
+	stick->x = sx - radius;
+	stick->y = sy - radius;
+	stick->w = radius * 2;
+	stick->h = radius * 2;
+	*stickRadius = radius;
+
+	int abRadius = unit / 2;
+	int abx = landscape ? w - unit * 3 : w * 3 / 4;
+	int aby = sy;
+	out[n++] = (struct OverlayButton) {{abx + unit / 2, aby - abRadius, abRadius * 2, abRadius * 2}, SDLK_x, "A", true};
+	out[n++] = (struct OverlayButton) {{abx - abRadius * 2 - unit / 2, aby + unit / 5, abRadius * 2, abRadius * 2}, SDLK_z, "B", true};
+
+	int topY = 10;
+	int shoulderW = unit * 3 / 2;
+	int shoulderH = unit * 3 / 4;
+	out[n++] = (struct OverlayButton) {{unit / 3, topY, shoulderW, shoulderH}, SDLK_a, "L", false};
+	out[n++] = (struct OverlayButton) {{w - shoulderW - unit / 3, topY, shoulderW, shoulderH}, SDLK_s, "R", false};
+
+	int smallW = unit * 2;
+	int smallH = unit / 2;
+	int gap = unit / 3;
+	int controlsY = topY + unit + gap;
+	out[n++] = (struct OverlayButton) {{w / 2 - smallW - gap / 2, controlsY, smallW, smallH}, SDLK_RETURN, "START", false};
+	out[n++] = (struct OverlayButton) {{w / 2 + gap / 2, controlsY, smallW, smallH}, SDLK_BACKSPACE, "SELECT", false};
+	if (!overlay.romLoaded)
+		out[n++] = (struct OverlayButton) {{w / 2 - unit * 3 / 2, h / 2 - unit * 3 / 8, unit * 3, unit * 3 / 4}, SDLK_F14, "LOAD ROM", false};
+	out[n++] = (struct OverlayButton) {{w / 2 - unit, topY, unit * 2, unit * 3 / 4}, SDLK_F13, "LINK", false};
+	return n;
+}
 static const SDL_Rect* _toggleRect(void) {
 	static SDL_Rect rect;
 	int w, h;
@@ -556,15 +419,6 @@ void mAndroidOverlaySetWindow(SDL_Window* window) {
 		}
 	}
 	overlay.window = window;
-	if (!window) {
-		if (debugTexture) SDL_DestroyTexture(debugTexture);
-		if (debugSurface) SDL_FreeSurface(debugSurface);
-		debugTexture = NULL;
-		debugSurface = NULL;
-		debugRenderer = NULL;
-		debugPanelWidth = 0;
-		debugUploadedGeneration = UINT64_MAX;
-	}
 	if (!overlay.touchesInitialized) {
 		int i;
 		for (i = 0; i < MAX_TOUCHES; ++i)
@@ -579,64 +433,65 @@ void mAndroidOverlayReset(void) {
 	int i;
 	for (i = 0; i < MAX_TOUCHES; ++i) {
 		if (overlay.touches[i].id != -1) {
-			_pushKey(overlay.touches[i].key, false);
+			if (overlay.touches[i].key != SDLK_UNKNOWN) _pushKey(overlay.touches[i].key, false);
 			overlay.touches[i].id = -1;
+			overlay.touches[i].joystick = false;
 		}
 	}
 }
 
 void mAndroidOverlayHandleEvent(const SDL_Event* event) {
-	if (event->type == SDL_WINDOWEVENT && event->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+	if ((event->type == SDL_WINDOWEVENT && event->window.event == SDL_WINDOWEVENT_FOCUS_LOST) || event->type == SDL_APP_WILLENTERBACKGROUND) {
 		mAndroidOverlayReset();
 		return;
 	}
-	if (event->type == SDL_APP_WILLENTERBACKGROUND) {
-		mAndroidOverlayReset();
-		return;
-	}
-	if (event->type != SDL_FINGERDOWN && event->type != SDL_FINGERUP && event->type != SDL_FINGERMOTION) {
-		return;
-	}
+	if (event->type != SDL_FINGERDOWN && event->type != SDL_FINGERUP && event->type != SDL_FINGERMOTION) return;
 	int w, h;
-	if (overlay.window) {
-		SDL_GetWindowSize(overlay.window, &w, &h);
-	} else {
-		return;
-	}
+	if (!overlay.window) return;
+	SDL_GetWindowSize(overlay.window, &w, &h);
+	if (w <= 0 || h <= 0) return;
 	Sint64 id = event->tfinger.fingerId;
 	int x = (int) (event->tfinger.x * w);
 	int y = (int) (event->tfinger.y * h);
-
 	if (event->type == SDL_FINGERDOWN) {
 		const SDL_Rect* toggle = _toggleRect();
 		if (x >= toggle->x && x < toggle->x + toggle->w && y >= toggle->y && y < toggle->y + toggle->h) {
 			overlay.hidden = !overlay.hidden;
-			if (overlay.hidden)
-				mAndroidOverlayReset();
+			if (overlay.hidden) mAndroidOverlayReset();
 			return;
 		}
-		if (overlay.hidden) {
+		if (overlay.hidden) return;
+		struct OverlayButton buttons[MAX_OVERLAY_BUTTONS];
+		SDL_Rect stick;
+		int stickRadius = 0;
+		int n = _layout(overlay.hasLastView ? &overlay.lastView : NULL, buttons, &stick, &stickRadius);
+		int dx = x - (stick.x + stickRadius), dy = y - (stick.y + stickRadius);
+		if (dx * dx + dy * dy <= stickRadius * stickRadius) {
+			int slot;
+			for (slot = 0; slot < MAX_TOUCHES && overlay.touches[slot].id != -1; ++slot) {}
+			if (slot < MAX_TOUCHES) {
+				overlay.touches[slot].id = id;
+				overlay.touches[slot].joystick = true;
+				overlay.touches[slot].key = SDLK_UNKNOWN;
+				float nx = (float) dx / stickRadius, ny = (float) dy / stickRadius;
+				if (nx * nx + ny * ny >= JOYSTICK_DEADZONE * JOYSTICK_DEADZONE) {
+					SDL_Keycode key = abs(dx) > abs(dy) ? (dx < 0 ? SDLK_LEFT : SDLK_RIGHT) : (dy < 0 ? SDLK_UP : SDLK_DOWN);
+					overlay.touches[slot].key = key;
+					_pushKey(key, true);
+				}
+			}
 			return;
 		}
-		struct OverlayButton buttons[12];
-		int n = _layout(overlay.hasLastView ? &overlay.lastView : NULL, buttons);
 		int i;
 		for (i = 0; i < n; ++i) {
-			if (x >= buttons[i].rect.x && x < buttons[i].rect.x + buttons[i].rect.w &&
-			    y >= buttons[i].rect.y && y < buttons[i].rect.y + buttons[i].rect.h) {
-				if (buttons[i].key == SDLK_F13) {
-					mAndroidPeerJniShowDialog();
-					return;
-				}
+			if (x >= buttons[i].rect.x && x < buttons[i].rect.x + buttons[i].rect.w && y >= buttons[i].rect.y && y < buttons[i].rect.y + buttons[i].rect.h) {
+				if (buttons[i].key == SDLK_F13) { mAndroidPeerJniShowDialog(); return; }
 				int slot;
-				for (slot = 0; slot < MAX_TOUCHES; ++slot) {
-					if (overlay.touches[slot].id == -1) {
-						break;
-					}
-				}
+				for (slot = 0; slot < MAX_TOUCHES && overlay.touches[slot].id != -1; ++slot) {}
 				if (slot < MAX_TOUCHES) {
 					overlay.touches[slot].id = id;
 					overlay.touches[slot].key = buttons[i].key;
+					overlay.touches[slot].joystick = false;
 					_pushKey(buttons[i].key, true);
 				}
 				return;
@@ -644,23 +499,33 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 		}
 		return;
 	}
-
-	// FINGERUP / FINGERMOTION: release or slide between buttons
-	struct OverlayButton buttons[12];
-	int n = overlay.hidden ? 0 : _layout(overlay.hasLastView ? &overlay.lastView : NULL, buttons);
+	struct OverlayButton buttons[MAX_OVERLAY_BUTTONS];
+	SDL_Rect stick;
+	int stickRadius = 0;
+	int n = overlay.hidden ? 0 : _layout(overlay.hasLastView ? &overlay.lastView : NULL, buttons, &stick, &stickRadius);
 	int i;
 	for (i = 0; i < MAX_TOUCHES; ++i) {
-		if (overlay.touches[i].id != id) {
+		if (overlay.touches[i].id != id) continue;
+		if (overlay.touches[i].joystick) {
+			int dx = x - (stick.x + stickRadius), dy = y - (stick.y + stickRadius);
+			SDL_Keycode next = SDLK_UNKNOWN;
+			// Keep ownership of this finger after it leaves the stick's hit area.
+			// SDL continues delivering motion for the active finger until release.
+			if (event->type != SDL_FINGERUP &&
+				dx * dx + dy * dy >= (int) (stickRadius * stickRadius * JOYSTICK_DEADZONE * JOYSTICK_DEADZONE))
+				next = abs(dx) > abs(dy) ? (dx < 0 ? SDLK_LEFT : SDLK_RIGHT) : (dy < 0 ? SDLK_UP : SDLK_DOWN);
+			if (next != overlay.touches[i].key) {
+				if (overlay.touches[i].key != SDLK_UNKNOWN) _pushKey(overlay.touches[i].key, false);
+				if (next != SDLK_UNKNOWN) _pushKey(next, true);
+				overlay.touches[i].key = next;
+			}
+			if (event->type == SDL_FINGERUP) overlay.touches[i].id = -1;
 			continue;
 		}
 		const struct OverlayButton* target = NULL;
 		int j;
 		for (j = 0; j < n; ++j) {
-			if (x >= buttons[j].rect.x && x < buttons[j].rect.x + buttons[j].rect.w &&
-			    y >= buttons[j].rect.y && y < buttons[j].rect.y + buttons[j].rect.h) {
-				target = &buttons[j];
-				break;
-			}
+			if (x >= buttons[j].rect.x && x < buttons[j].rect.x + buttons[j].rect.w && y >= buttons[j].rect.y && y < buttons[j].rect.y + buttons[j].rect.h) { target = &buttons[j]; break; }
 		}
 		if (event->type == SDL_FINGERUP) {
 			_pushKey(overlay.touches[i].key, false);
@@ -668,87 +533,86 @@ void mAndroidOverlayHandleEvent(const SDL_Event* event) {
 		} else if (!target || target->key != overlay.touches[i].key) {
 			_pushKey(overlay.touches[i].key, false);
 			overlay.touches[i].id = -1;
-			if (target) {
-				overlay.touches[i].id = id;
-				overlay.touches[i].key = target->key;
-				_pushKey(target->key, true);
-			}
+			if (target) { overlay.touches[i].id = id; overlay.touches[i].key = target->key; _pushKey(target->key, true); }
 		}
+	}
+}
+static void _fillCircle(SDL_Renderer* renderer, int cx, int cy, int radius) {
+	int y;
+	for (y = -radius; y <= radius; ++y) {
+		int x = (int) sqrt((double) radius * radius - (double) y * y);
+		SDL_RenderDrawLine(renderer, cx - x, cy + y, cx + x, cy + y);
+	}
+}
+
+static void _drawCircle(SDL_Renderer* renderer, int cx, int cy, int radius) {
+	int x = radius, y = 0, error = 1 - radius;
+	while (x >= y) {
+		SDL_RenderDrawLine(renderer, cx - x, cy + y, cx + x, cy + y);
+		SDL_RenderDrawLine(renderer, cx - x, cy - y, cx + x, cy - y);
+		SDL_RenderDrawLine(renderer, cx - y, cy + x, cx + y, cy + x);
+		SDL_RenderDrawLine(renderer, cx - y, cy - x, cx + y, cy - x);
+		++y;
+		if (error < 0) error += 2 * y + 1;
+		else { --x; error += 2 * (y - x) + 1; }
 	}
 }
 
 void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view) {
-	if (!overlay.window || !renderer) {
-		return;
-	}
+	if (!overlay.window || !renderer) return;
 	const SDL_Rect* toggle = _toggleRect();
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 	SDL_SetRenderDrawColor(renderer, 200, 200, 200, 150);
 	SDL_RenderFillRect(renderer, toggle);
-
-	if (overlay.hidden) {
-		int w, h;
-		SDL_GetWindowSize(overlay.window, &w, &h);
-		_drawDebugStatus(renderer, w);
-		return;
-	}
-	if (view) {
-		overlay.lastView = *view;
-		overlay.hasLastView = true;
-	} else {
-		overlay.hasLastView = false;
-	}
-	struct OverlayButton buttons[12];
-	int n = _layout(view, buttons);
+	if (overlay.hidden) return;
+	if (view) { overlay.lastView = *view; overlay.hasLastView = true; }
+	else overlay.hasLastView = false;
+	struct OverlayButton buttons[MAX_OVERLAY_BUTTONS];
+	SDL_Rect stick; int stickRadius = 0;
+	int n = _layout(view, buttons, &stick, &stickRadius);
+	int cx = stick.x + stickRadius, cy = stick.y + stickRadius;
+	SDL_SetRenderDrawColor(renderer, 30, 35, 45, 105);
+	_fillCircle(renderer, cx, cy, stickRadius);
+	SDL_SetRenderDrawColor(renderer, 235, 240, 250, 190);
+	_drawCircle(renderer, cx, cy, stickRadius);
+	_drawCircle(renderer, cx, cy, stickRadius * 2 / 3);
+	SDL_RenderDrawLine(renderer, cx - stickRadius / 2, cy, cx + stickRadius / 2, cy);
+	SDL_RenderDrawLine(renderer, cx, cy - stickRadius / 2, cx, cy + stickRadius / 2);
+	SDL_SetRenderDrawColor(renderer, 235, 235, 235, 125);
 	int i;
 	for (i = 0; i < n; ++i) {
+		if (buttons[i].round) {
+			int bx = buttons[i].rect.x + buttons[i].rect.w / 2, by = buttons[i].rect.y + buttons[i].rect.h / 2;
+			_fillCircle(renderer, bx, by, buttons[i].rect.w / 2);
+			SDL_SetRenderDrawColor(renderer, 255, 255, 255, 210);
+			_drawCircle(renderer, bx, by, buttons[i].rect.w / 2);
+		} else {
+			SDL_RenderFillRect(renderer, &buttons[i].rect);
+			SDL_SetRenderDrawColor(renderer, 255, 255, 255, 210);
+			SDL_RenderDrawRect(renderer, &buttons[i].rect);
+		}
 		SDL_SetRenderDrawColor(renderer, 235, 235, 235, 125);
-		SDL_RenderFillRect(renderer, &buttons[i].rect);
-		SDL_SetRenderDrawColor(renderer, 255, 255, 255, 210);
-		SDL_RenderDrawRect(renderer, &buttons[i].rect);
 	}
-
-	int w, h;
-	SDL_GetWindowSize(overlay.window, &w, &h);
-	if (w <= 0 || h <= 0) {
-		return;
-	}
-	int viewKey = view && view->h > 0 ? (view->y << 16) ^ view->h ^ view->w : -1;
-	if (overlayCache.renderer != renderer || overlayCache.width != w || overlayCache.height != h || overlayCache.viewKey != viewKey) {
-		overlayCache.viewKey = viewKey;
+	int w, h; SDL_GetWindowSize(overlay.window, &w, &h);
+	if (w <= 0 || h <= 0) return;
+	if (overlayCache.renderer != renderer || overlayCache.width != w || overlayCache.height != h) {
 		_freeOverlayCache();
-		overlayCache.renderer = renderer;
-		overlayCache.width = w;
-		overlayCache.height = h;
+		overlayCache.renderer = renderer; overlayCache.width = w; overlayCache.height = h;
 		overlayCache.surface = _makeSurface(w, h);
-		if (overlayCache.surface) {
-			overlayCache.texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
-				SDL_TEXTUREACCESS_STREAMING, w, h);
-		}
-		if (!overlayCache.surface || !overlayCache.texture) {
-			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay allocation failed: %s", SDL_GetError());
-			_freeOverlayCache();
-			return;
-		}
+		if (overlayCache.surface) overlayCache.texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+		if (!overlayCache.surface || !overlayCache.texture) { SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay allocation failed: %s", SDL_GetError()); _freeOverlayCache(); return; }
 		SDL_SetTextureBlendMode(overlayCache.texture, SDL_BLENDMODE_BLEND);
-		SDL_Surface* surf = overlayCache.surface;
-		Uint32 transparent = SDL_MapRGBA(surf->format, 0, 0, 0, 0);
-		SDL_FillRect(surf, NULL, transparent);
-		Uint32 white = SDL_MapRGBA(surf->format, 0xFF, 0xFF, 0xFF, 0xF0);
-		for (i = 0; i < n; ++i) {
-			int scale = 3;
-			int tx = buttons[i].rect.x + (buttons[i].rect.w - 8 * scale) / 2;
-			int ty = buttons[i].rect.y + (buttons[i].rect.h - 8 * scale) / 2;
-			_blitText(surf, buttons[i].label, tx, ty, scale, white);
-		}
-		if (SDL_UpdateTexture(overlayCache.texture, NULL, surf->pixels, surf->pitch) < 0) {
-			SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay texture update failed: %s", SDL_GetError());
-			_freeOverlayCache();
-			return;
-		}
 	}
-	if (SDL_RenderCopy(renderer, overlayCache.texture, NULL, NULL) < 0) {
-		SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay draw failed: %s", SDL_GetError());
+	SDL_Surface* surf = overlayCache.surface;
+	Uint32 transparent = SDL_MapRGBA(surf->format, 0, 0, 0, 0);
+	SDL_FillRect(surf, NULL, transparent);
+	Uint32 white = SDL_MapRGBA(surf->format, 0xFF, 0xFF, 0xFF, 0xF0);
+	for (i = 0; i < n; ++i) {
+		int tx = buttons[i].rect.x + (buttons[i].rect.w - (int) strlen(buttons[i].label) * 16) / 2;
+		int ty = buttons[i].rect.y + (buttons[i].rect.h - 16) / 2;
+		_blitText(surf, buttons[i].label, tx, ty, 2, white);
 	}
-	_drawDebugStatus(renderer, w);
+	_blitText(surf, "4-WAY", cx - 20, cy - 8, 1, white);
+	if (SDL_UpdateTexture(overlayCache.texture, NULL, surf->pixels, surf->pitch) < 0) { SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay texture update failed: %s", SDL_GetError()); _freeOverlayCache(); return; }
+	if (SDL_RenderCopy(renderer, overlayCache.texture, NULL, NULL) < 0) SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Touch overlay draw failed: %s", SDL_GetError());
 }

@@ -607,28 +607,23 @@ static void mSDLAndroidPaceFrame(struct timespec* nextFrame) {
 	nextFrame->tv_nsec = (long) (nextNs % 1000000000ULL);
 }
 
-static void mSDLAndroidGameDest(const struct mSDLRenderer* renderer, SDL_Rect* dest) {
-	int vw = renderer->viewportWidth;
-	int vh = renderer->viewportHeight;
-	int gw = (int) renderer->width;
-	int gh = (int) renderer->height;
-	int areaW = vw;
-	int areaH = vh;
-	if (vw <= 0 || vh <= 0 || gw <= 0 || gh <= 0) {
-		dest->x = dest->y = dest->w = dest->h = 0;
-		return;
+static void mSDLAndroidGameRect(struct mSDLRenderer* renderer, SDL_Rect* dest) {
+	dest->w = renderer->viewportHeight * renderer->width / renderer->height;
+	dest->h = renderer->viewportHeight;
+	if (dest->w > renderer->viewportWidth) {
+		dest->w = renderer->viewportWidth;
+		dest->h = renderer->viewportWidth * renderer->height / renderer->width;
 	}
-	/* Portrait keeps the game in the top band. The touch controls use the rest. */
-	if (vh > vw)
-		areaH = vh * 58 / 100;
-	dest->w = areaH * gw / gh;
-	dest->h = areaH;
-	if (dest->w > areaW) {
-		dest->w = areaW;
-		dest->h = areaW * gh / gw;
+	dest->x = (renderer->viewportWidth - dest->w) / 2;
+	if (renderer->viewportWidth < renderer->viewportHeight) {
+		/* Portrait: pin the game under the top utility row so the bottom
+		 * half stays clear for the thumbstick and buttons. */
+		dest->y = mAndroidOverlayTopInset(renderer->viewportWidth, renderer->viewportHeight) + 8;
+		if (dest->y + dest->h > renderer->viewportHeight)
+			dest->y = renderer->viewportHeight - dest->h;
+	} else {
+		dest->y = (renderer->viewportHeight - dest->h) / 2;
 	}
-	dest->x = (areaW - dest->w) / 2;
-	dest->y = vh > vw ? (areaH - dest->h) / 2 : (vh - dest->h) / 2;
 }
 
 static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
@@ -679,7 +674,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			mCoreSyncWaitFrameEnd(&context->impl->sync);
 
 			SDL_Rect dest;
-			mSDLAndroidGameDest(renderer, &dest);
+			mSDLAndroidGameRect(renderer, &dest);
 
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {
@@ -776,7 +771,7 @@ static void mSDLAndroidRunloop(struct mSDLRenderer* renderer, void* user) {
 			stageStart = SDL_GetPerformanceCounter();
 
 			SDL_Rect dest;
-			mSDLAndroidGameDest(renderer, &dest);
+			mSDLAndroidGameRect(renderer, &dest);
 
 			SDL_SetRenderDrawColor(renderer->sdlRenderer, 0, 0, 0, 255);
 			if (SDL_RenderClear(renderer->sdlRenderer) < 0) {

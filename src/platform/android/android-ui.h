@@ -25,6 +25,9 @@ void mAndroidOverlayReset(void);
 void mAndroidOverlayHandleEvent(const SDL_Event* event);
 void mAndroidOverlayDraw(SDL_Renderer* renderer, const SDL_Rect* view);
 void mAndroidOverlaySetDebugStatus(const char* rom, const char* load, const char* frames, const char* thread, const char* video, const char* pace, const char* error);
+// Bottom edge, in pixels, of the top utility control row for a window of the
+// given size. The game view uses it to sit under the top controls in portrait.
+int mAndroidOverlayTopInset(int w, int h);
 
 CXX_GUARD_END
 
