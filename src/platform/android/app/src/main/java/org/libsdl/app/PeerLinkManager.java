@@ -108,6 +108,14 @@ public final class PeerLinkManager {
             }
         }
     };
+    private final Runnable directTimeout = new Runnable() {
+        @Override public void run() {
+            if (accepted && !directConnected) {
+                showStatus("Relay",
+                    "Direct phone link unavailable — game data is on the broker relay.");
+            }
+        }
+    };
     private final Runnable pcServerWatchdog = new Runnable() {
         @Override public void run() {
             if (pcServerMode) {
@@ -595,6 +603,8 @@ public final class PeerLinkManager {
                     handlePcServerControl(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 } else if (topic.equals(pcDownFrameTopic())) {
                     handleEncryptedFrame(payload);
+                } else if (topic.equals(signalInTopic())) {
+                    handleSignal(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 }
                 return;
             }
@@ -715,8 +725,14 @@ public final class PeerLinkManager {
             resetReceiveCounters();
             accepted = true;
             reopenNativeSession();
-            showStatus("Co-op connected", "Both phones are connected through your PC server.");
+            beginDirectLink(host);
         } else if ("peer-disconnected".equals(type)) {
+            handler.removeCallbacks(directTimeout);
+            try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
+            try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
+            peerConnection = null;
+            dataChannel = null;
+            directConnected = false;
             accepted = false;
             sessionKey = null;
             pcPeerId = null;
@@ -813,15 +829,14 @@ public final class PeerLinkManager {
         handler.postDelayed(acceptRetry, 2500);
 
         reopenNativeSession();
-        showStatus("Paired", "Connected. Establishing the direct phone-to-phone route…");
-        createPeerConnection(true);
+        beginDirectLink(true);
     }
 
     private void handleSignal(JSONObject signal) throws Exception {
         if (!sessionId.equals(signal.optString("session")))
             return;
         String type = signal.optString("type");
-        if ("accept".equals(type) && !host) {
+        if ("accept".equals(type) && !host && !pcServerMode) {
             if (accepted && sessionKey != null)
                 return;
             String expected = hmacText(pinKey, sessionId + "|accept|" + Base64.encodeToString(ecdhKeyPair.getPublic().getEncoded(), Base64.NO_WRAP));
@@ -831,8 +846,7 @@ public final class PeerLinkManager {
             sessionKey = deriveSessionKey(shared, pinKey, sessionId);
             accepted = true;
             reopenNativeSession();
-            showStatus("Paired", "Connected. Establishing the direct phone-to-phone route…");
-            createPeerConnection(false);
+            beginDirectLink(false);
             return;
         }
 
@@ -843,6 +857,10 @@ public final class PeerLinkManager {
         acceptedJoinPublicKey = null;
 
         if ("offer".equals(type) && !host) {
+            if (peerConnection == null)
+                createPeerConnection(false);
+            if (peerConnection == null)
+                return;
             SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, value);
             peerConnection.setRemoteDescription(new SimpleSdpObserver() {
                 @Override public void onSetSuccess() {
@@ -851,6 +869,8 @@ public final class PeerLinkManager {
                 }
             }, offer);
         } else if ("answer".equals(type) && host) {
+            if (peerConnection == null)
+                return;
             SessionDescription answer = new SessionDescription(SessionDescription.Type.ANSWER, value);
             peerConnection.setRemoteDescription(new SimpleSdpObserver() {
                 @Override public void onSetSuccess() {
@@ -882,12 +902,18 @@ public final class PeerLinkManager {
                 @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
                     boolean iceReady = state == PeerConnection.IceConnectionState.CONNECTED
                         || state == PeerConnection.IceConnectionState.COMPLETED;
-                    directConnected = iceReady && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN;
+                    boolean channelOpen = dataChannel != null && dataChannel.state() == DataChannel.State.OPEN;
+                    directConnected = iceReady && channelOpen;
                     updateNativeConnection();
-                    if (directConnected)
-                        showStatus("Connected directly", "Phone-to-phone connection is active.");
-                    else if (accepted)
-                        showStatus("Connected by relay", "Using the automatic relay route.");
+                    if (directConnected) {
+                        handler.removeCallbacks(directTimeout);
+                        showStatus("Direct", "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
+                    } else if (accepted && (state == PeerConnection.IceConnectionState.FAILED
+                        || state == PeerConnection.IceConnectionState.DISCONNECTED
+                        || state == PeerConnection.IceConnectionState.CLOSED)) {
+                        showStatus("Relay",
+                            "Direct phone link dropped — game data is on the broker relay.");
+                    }
                 }
                 @Override public void onIceConnectionReceivingChange(boolean receiving) {}
                 @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {}
@@ -918,6 +944,8 @@ public final class PeerLinkManager {
                 throw new IllegalStateException("WebRTC could not create a peer connection");
 
             if (offerer) {
+                /* One reliable ordered channel carries movement, mailbox, and
+                 * SIO words. Unreliable would drop link-cable transfers. */
                 DataChannel.Init init = new DataChannel.Init();
                 init.ordered = true;
                 dataChannel = peerConnection.createDataChannel("hns-gba-link", init);
@@ -934,8 +962,19 @@ public final class PeerLinkManager {
             }
         } catch (Exception e) {
             directConnected = false;
-            showStatus("Connected by relay", "Direct route unavailable; using the relay.");
+            showStatus("Relay", "Direct phone link unavailable — game data is on the broker relay.");
         }
+    }
+
+    private void beginDirectLink(boolean offerer) {
+        if (!accepted || sessionKey == null)
+            return;
+        subscribe(signalInTopic());
+        handler.removeCallbacks(directTimeout);
+        handler.postDelayed(directTimeout, 12000);
+        showStatus("Relay",
+            "Paired. Trying direct phone-to-phone… relay active until Direct connects.");
+        createPeerConnection(offerer);
     }
 
     private void createAnswer() {
@@ -958,11 +997,16 @@ public final class PeerLinkManager {
         channel.registerObserver(new DataChannel.Observer() {
             @Override public void onBufferedAmountChange(long previousAmount) {}
             @Override public void onStateChange() {
-                directConnected = channel.state() == DataChannel.State.OPEN;
+                boolean iceReady = peerConnection != null
+                    && (peerConnection.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED
+                        || peerConnection.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED);
+                directConnected = channel.state() == DataChannel.State.OPEN && iceReady;
                 if (directConnected) {
-                    showStatus("Connected directly", "Phone-to-phone connection is active.");
-                } else if (accepted) {
-                    showStatus("Connected by relay", "Using the automatic relay route.");
+                    handler.removeCallbacks(directTimeout);
+                    showStatus("Direct", "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
+                } else if (accepted && channel.state() != DataChannel.State.CONNECTING) {
+                    showStatus("Relay",
+                        "Direct phone link unavailable — game data is on the broker relay.");
                 }
                 updateNativeConnection();
             }
@@ -991,7 +1035,7 @@ public final class PeerLinkManager {
             message.put("session", sessionId);
             message.put("value", value);
             message.put("mac", hmacText(sessionKey, sessionId + "|" + type + "|" + value));
-            publish(host ? toJoinTopic() : toHostTopic(), message.toString().getBytes(StandardCharsets.UTF_8), 1, false);
+            publish(signalOutTopic(), message.toString().getBytes(StandardCharsets.UTF_8), 1, false);
         } catch (Exception ignored) {}
     }
 
@@ -1023,16 +1067,17 @@ public final class PeerLinkManager {
             return false;
         try {
             byte[] encrypted = encryptFrame(frame);
-            // QoS 0: fire-and-forget. QoS 1 ACK round-trips batched movement
-            // into multi-second teleports on the peer phone.
-            if (pcServerMode)
-                return publish(pcUpFrameTopic(), encrypted, 0, false);
+            // Prefer direct WebRTC for ALL co-op game data. Broker MQTT is
+            // signaling-first and only a QoS 0 fallback when Direct is down.
             if (directConnected && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {
                 if (dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true)))
                     return true;
             }
-            if (mqttConnected)
-                return publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 0, false);
+            if (!mqttConnected)
+                return false;
+            if (pcServerMode)
+                return publish(pcUpFrameTopic(), encrypted, 0, false);
+            return publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 0, false);
         } catch (Exception ignored) {}
         return false;
     }
@@ -1134,12 +1179,26 @@ public final class PeerLinkManager {
     private String pcUpLeaveTopic() { return pcRootTopic() + "/up/" + pcClientId + "/leave"; }
     private String pcDownControlTopic() { return pcRootTopic() + "/down/" + pcClientId + "/control"; }
     private String pcDownFrameTopic() { return pcRootTopic() + "/down/" + pcClientId + "/frame"; }
+    private String pcWebRtcToHostTopic() { return pcRootTopic() + "/webrtc/to-host"; }
+    private String pcWebRtcToJoinTopic() { return pcRootTopic() + "/webrtc/to-join"; }
 
     private String roomTopic() { return "hns/johto/" + pin + "/room"; }
     private String toHostTopic() { return "hns/johto/" + pin + "/" + sessionId + "/to-host"; }
     private String toJoinTopic() { return "hns/johto/" + pin + "/" + sessionId + "/to-join"; }
     private String relayHostTopic() { return "hns/johto/" + pin + "/" + sessionId + "/relay/host"; }
     private String relayJoinTopic() { return "hns/johto/" + pin + "/" + sessionId + "/relay/join"; }
+
+    private String signalOutTopic() {
+        if (pcServerMode)
+            return host ? pcWebRtcToJoinTopic() : pcWebRtcToHostTopic();
+        return host ? toJoinTopic() : toHostTopic();
+    }
+
+    private String signalInTopic() {
+        if (pcServerMode)
+            return host ? pcWebRtcToHostTopic() : pcWebRtcToJoinTopic();
+        return host ? toHostTopic() : toJoinTopic();
+    }
 
     private void initializeWebRtc() {
         if (!webRtcInitialized) {
@@ -1237,6 +1296,7 @@ public final class PeerLinkManager {
         handler.removeCallbacks(acceptRetry);
         handler.removeCallbacks(pcHeartbeat);
         handler.removeCallbacks(pcServerWatchdog);
+        handler.removeCallbacks(directTimeout);
         if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
             publish(pcUpLeaveTopic(), pcAuthSignal("leave"), 0, false);
         if (host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
