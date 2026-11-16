@@ -319,9 +319,10 @@ static void _pushKey(SDL_Keycode key, bool down) {
 
 static int _unit(int w, int h) {
 	bool landscape = w >= h;
-	int unit = (landscape ? h : w) / 8;
-	if (unit < 42) unit = 42;
-	if (unit > 88) unit = 88;
+	/* About 1.4x the previous on-screen controls, both orientations. */
+	int unit = ((landscape ? h : w) / 8) * 7 / 5;
+	if (unit < 58) unit = 58;
+	if (unit > 123) unit = 123;
 	return unit;
 }
 

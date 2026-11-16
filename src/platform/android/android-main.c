@@ -142,7 +142,6 @@ static uint32_t sCoopLastPosFrame = 0;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static bool sCoopHostRole;
-static uint32_t sCoopPrevLocalSio = UINT32_MAX;
 static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
 static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
 static atomic_uint sPeerGeneration;
@@ -337,7 +336,8 @@ static bool mSDLAndroidCoopHeader(struct mCore* core, uint32_t address) {
 }
 
 static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
-	if (!core || !core->busRead32 || !core->busRead16 || !core->busWrite32)
+	if (!core || !core->busRead32 || !core->busRead16 || !core->busRead8
+		|| !core->busWrite32 || !core->busWrite8)
 		return;
 
 	bool connected = sPeerLink && mPeerLinkIsConnected(sPeerLink);
@@ -352,7 +352,6 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 	if (sCoopMailboxAddress && !mSDLAndroidCoopHeader(core, sCoopMailboxAddress)) {
 		sCoopMailboxAddress = 0;
 		sCoopMailboxNextScan = frame;
-		sCoopPrevLocalSio = UINT32_MAX;
 	}
 	if (!sCoopMailboxAddress && frame >= sCoopMailboxNextScan) {
 		sCoopMailboxNextScan = frame + 30;
@@ -380,19 +379,22 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 
 	if (sCoopMailboxAddress) {
 		uint32_t transport = connected ? 1 : 0;
-		if (!connected) {
-			sCoopPrevLocalSio = UINT32_MAX;
-		} else {
-			/* gameReady stays 0 until the link handshake has actually produced
-			 * the other player. The first warp in that window uses the link
-			 * map loader and follows an unspawned guest. Dropping transport
-			 * for this one frame makes the ROM close the link before that
-			 * loader runs. Later warps, after gameReady, keep the session. */
+		/* gameReady stays 0 until the handshake has produced the other
+		 * player. localSioActive is cleared at CB2_LoadMap and published
+		 * again only after the new map's overworld is running. Hold the
+		 * ROM's sCoopLinkStarted flag clear for that whole window so the
+		 * local map loader runs instead of following an unspawned guest.
+		 * The flag is the EWRAM byte immediately before the mailbox. */
+		if (connected) {
 			uint32_t gameReady = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_GAME_READY);
 			uint32_t localSioNow = core->busRead32(core, sCoopMailboxAddress + 2116) ? 1 : 0;
-			if (!gameReady && sCoopPrevLocalSio == 1 && localSioNow == 0)
-				transport = 0;
-			sCoopPrevLocalSio = localSioNow;
+			uint32_t flagAddress = sCoopMailboxAddress - 5;
+			if (gameReady == 0 && localSioNow == 0
+				&& flagAddress >= GBA_EWRAM_START && flagAddress < sCoopMailboxAddress) {
+				uint8_t flag = core->busRead8(core, flagAddress);
+				if (flag <= 1)
+					core->busWrite8(core, flagAddress, 0);
+			}
 		}
 		core->busWrite32(core, sCoopMailboxAddress + 8, transport);
 		core->busWrite32(core, sCoopMailboxAddress + 2124, sCoopHostRole ? 1 : 0);
@@ -606,7 +608,6 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 	sCoopLastPosFrame = 0;
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopLastConfigSequence = UINT32_MAX;
-	sCoopPrevLocalSio = UINT32_MAX;
 	sCoopHostRole = connected && host;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
