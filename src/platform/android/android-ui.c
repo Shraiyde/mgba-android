@@ -344,7 +344,11 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* st
 	bool landscape = w >= h;
 	int unit = _unit(w, h);
 	int n = 0;
-	int radius = unit * 2;
+	/* Thumbstick stays at the pre-1.4x size; face/shoulder buttons use unit. */
+	int stickUnit = (landscape ? h : w) / 8;
+	if (stickUnit < 42) stickUnit = 42;
+	if (stickUnit > 88) stickUnit = 88;
+	int radius = stickUnit * 2;
 	int sx = landscape ? unit * 3 : w / 4;
 	int sy;
 	if (landscape) {
