@@ -123,7 +123,22 @@ public final class PeerLinkManager {
             if (accepted && !directConnected) {
                 showStatus("Relay",
                     "Direct phone link unavailable — game data is on the broker relay.");
+                handler.removeCallbacks(directRetry);
+                handler.postDelayed(directRetry, 8000);
             }
+        }
+    };
+    private final Runnable directRetry = new Runnable() {
+        @Override public void run() {
+            if (!accepted || sessionKey == null || directConnected)
+                return;
+            showStatus("Relay",
+                "Retrying Direct phone-to-phone… relay carries game data until Direct returns.");
+            try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
+            try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
+            peerConnection = null;
+            dataChannel = null;
+            beginDirectLink(host);
         }
     };
     private final Runnable pcServerWatchdog = new Runnable() {
@@ -738,6 +753,7 @@ public final class PeerLinkManager {
             beginDirectLink(host);
         } else if ("peer-disconnected".equals(type)) {
             handler.removeCallbacks(directTimeout);
+            handler.removeCallbacks(directRetry);
             try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
             try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
             peerConnection = null;
@@ -759,7 +775,8 @@ public final class PeerLinkManager {
             updateNativeConnection();
             if (mqttConnected)
                 sendPcHello();
-            showStatus("Player disconnected", "Holding the session while the other phone reconnects…");
+            showStatus("Relay",
+                "Partner left — holding the room. Mid-battle sessions end cleanly; Direct re-pairs when they return.");
         } else if ("full".equals(type) || "rejected".equals(type)) {
             showStatus("PC server refused connection", data != null ? data.optString("reason", "Unable to join this room.") : "Unable to join this room.");
         }
@@ -917,12 +934,15 @@ public final class PeerLinkManager {
                     updateNativeConnection();
                     if (directConnected) {
                         handler.removeCallbacks(directTimeout);
+                        handler.removeCallbacks(directRetry);
                         showStatus("Direct", "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
                     } else if (accepted && (state == PeerConnection.IceConnectionState.FAILED
                         || state == PeerConnection.IceConnectionState.DISCONNECTED
                         || state == PeerConnection.IceConnectionState.CLOSED)) {
                         showStatus("Relay",
                             "Direct phone link dropped — game data is on the broker relay.");
+                        handler.removeCallbacks(directRetry);
+                        handler.postDelayed(directRetry, 5000);
                     }
                 }
                 @Override public void onIceConnectionReceivingChange(boolean receiving) {}
@@ -981,6 +1001,7 @@ public final class PeerLinkManager {
             return;
         subscribe(signalInTopic());
         handler.removeCallbacks(directTimeout);
+        handler.removeCallbacks(directRetry);
         handler.postDelayed(directTimeout, 12000);
         showStatus("Relay",
             "Paired. Trying direct phone-to-phone… relay active until Direct connects.");
@@ -1013,10 +1034,13 @@ public final class PeerLinkManager {
                 directConnected = channel.state() == DataChannel.State.OPEN && iceReady;
                 if (directConnected) {
                     handler.removeCallbacks(directTimeout);
+                    handler.removeCallbacks(directRetry);
                     showStatus("Direct", "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
                 } else if (accepted && channel.state() != DataChannel.State.CONNECTING) {
                     showStatus("Relay",
                         "Direct phone link unavailable — game data is on the broker relay.");
+                    handler.removeCallbacks(directRetry);
+                    handler.postDelayed(directRetry, 5000);
                 }
                 updateNativeConnection();
             }
@@ -1317,6 +1341,7 @@ public final class PeerLinkManager {
         handler.removeCallbacks(pcHeartbeat);
         handler.removeCallbacks(pcServerWatchdog);
         handler.removeCallbacks(directTimeout);
+        handler.removeCallbacks(directRetry);
         if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
             publish(pcUpLeaveTopic(), pcAuthSignal("leave"), 0, false);
         if (host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
