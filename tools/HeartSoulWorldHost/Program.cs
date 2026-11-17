@@ -386,12 +386,30 @@ internal static class Program
     {
         if (!Clients.TryGetValue(clientId, out var slot))
             return;
-        await EnsurePeerConnection(slot);
+        slot.LastSeenUtc = DateTime.UtcNow;
+        slot.Connected = true;
         try
         {
             using JsonDocument doc = JsonDocument.Parse(payload);
             JsonElement root = doc.RootElement;
             string? type = root.GetProperty("type").GetString();
+
+            // Phone retries often send a fresh offer after ICE FAILED. Recreate the
+            // PeerConnection so setRemoteDescription is not applied to a dead PC.
+            if (type == "offer" && slot.PeerConnection != null)
+            {
+                var ice = slot.PeerConnection.iceConnectionState;
+                if (ice is RTCIceConnectionState.failed or RTCIceConnectionState.closed
+                    or RTCIceConnectionState.disconnected)
+                {
+                    try { slot.PeerConnection.close(); } catch { }
+                    slot.PeerConnection = null;
+                    slot.DataChannel = null;
+                    Console.WriteLine($"[webrtc] {Short(clientId)} recycled PeerConnection for new offer.");
+                }
+            }
+
+            await EnsurePeerConnection(slot);
             var pc = slot.PeerConnection!;
             if (type == "offer")
             {
@@ -403,8 +421,22 @@ internal static class Program
                 });
                 if (result != SetDescriptionResultEnum.OK)
                 {
-                    Console.WriteLine($"[webrtc] setRemote offer failed: {result}");
-                    return;
+                    Console.WriteLine($"[webrtc] setRemote offer failed: {result}; forcing new PC.");
+                    try { pc.close(); } catch { }
+                    slot.PeerConnection = null;
+                    slot.DataChannel = null;
+                    await EnsurePeerConnection(slot);
+                    pc = slot.PeerConnection!;
+                    result = pc.setRemoteDescription(new RTCSessionDescriptionInit
+                    {
+                        type = RTCSdpType.offer,
+                        sdp = sdp
+                    });
+                    if (result != SetDescriptionResultEnum.OK)
+                    {
+                        Console.WriteLine($"[webrtc] setRemote offer failed again: {result}");
+                        return;
+                    }
                 }
                 var answer = pc.createAnswer();
                 await pc.setLocalDescription(answer);

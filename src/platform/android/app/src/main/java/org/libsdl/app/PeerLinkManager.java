@@ -150,10 +150,14 @@ public final class PeerLinkManager {
     private final Runnable directTimeout = new Runnable() {
         @Override public void run() {
             if (accepted && !directConnected) {
-                showStatus("Relay",
-                    "Direct phone link unavailable — game data is on the broker relay.");
+                if (pcServerMode)
+                    showStatus("PC Host",
+                        "Still connecting to the PC — game data stays on the host path; retrying WebRTC…");
+                else
+                    showStatus("Relay",
+                        "Direct phone link unavailable — game data is on the broker relay.");
                 handler.removeCallbacks(directRetry);
-                handler.postDelayed(directRetry, 8000);
+                handler.postDelayed(directRetry, pcServerMode ? 3000 : 8000);
             }
         }
     };
@@ -167,7 +171,8 @@ public final class PeerLinkManager {
             dataChannel = null;
             directViaTurn = false;
             pendingCandidates.clear();
-            beginDirectLink(host);
+            // PC world host always expects the phone to offer (one PC per phone).
+            beginDirectLink(pcServerMode || host);
         }
     };
     private final Runnable pcServerWatchdog = new Runnable() {
@@ -333,8 +338,6 @@ public final class PeerLinkManager {
         choices.add("Join PC Host (PIN)");
         if ("pc".equals(savedRole) && savedPin != null)
             choices.add("Reconnect to PC Host");
-        boolean diagOn = prefs.getBoolean(PREF_DIAG_LOGS, false);
-        choices.add(diagOn ? "Debug logs: ON" : "Debug logs: OFF");
         choices.add("Play Offline");
 
         new AlertDialog.Builder(activity)
@@ -345,12 +348,7 @@ public final class PeerLinkManager {
                     showPcServerPinDialog();
                 else if ("Reconnect to PC Host".equals(choice))
                     startPcServerJoin(savedPin);
-                else if (choice.startsWith("Debug logs:")) {
-                    boolean next = !diagOn;
-                    prefs.edit().putBoolean(PREF_DIAG_LOGS, next).apply();
-                    nativeSetDiagLogs(next);
-                    showStatus("Debug logs", next ? "Verbose GBA diagnostics enabled." : "Verbose diagnostics off.");
-                } else if ("Play Offline".equals(choice)) {
+                else if ("Play Offline".equals(choice)) {
                     closeCurrentSession(true);
                     showStatus("Offline mode", "The co-op session has been stopped.");
                 }
@@ -909,6 +907,7 @@ public final class PeerLinkManager {
             reopenNativeSession();
             beginDirectLink(true);
         } else if ("peer-disconnected".equals(type)) {
+            boolean partnerReturning = data != null && data.optBoolean("reconnecting", false);
             handler.removeCallbacks(directTimeout);
             handler.removeCallbacks(directRetry);
             try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
@@ -916,10 +915,19 @@ public final class PeerLinkManager {
             peerConnection = null;
             dataChannel = null;
             directConnected = false;
-            accepted = false;
-            sessionKey = null;
             pcPeerId = null;
             pcPeerPublicKey = null;
+            pendingCandidates.clear();
+            if (pcServerMode && partnerReturning) {
+                // Stay authenticated to the PC host; only the companion slot is empty.
+                // A later "peer" control message re-opens WebRTC without a full re-PIN.
+                updateNativeConnection();
+                showStatus("PC Host",
+                    "Partner reconnecting — staying on the PC host…");
+                return;
+            }
+            accepted = false;
+            sessionKey = null;
             sendCounter.set(1);
             resetReceiveCounters();
             ecdhKeyPair = null;
@@ -930,10 +938,10 @@ public final class PeerLinkManager {
             } catch (Exception ignored) {}
             pcHelloSent = false;
             updateNativeConnection();
-            if (mqttConnected)
+            if (pcServerMode && mqttConnected)
                 sendPcHello();
-            showStatus("Relay",
-                "Partner left — holding the room. Mid-battle sessions end cleanly; Direct re-pairs when they return.");
+            showStatus(pcServerMode ? "PC Host" : "Relay",
+                "Partner left — holding the room. Re-pairs when they return.");
         } else if ("full".equals(type) || "rejected".equals(type)) {
             showStatus("PC server refused connection", data != null ? data.optString("reason", "Unable to join this room.") : "Unable to join this room.");
         }
@@ -1162,14 +1170,20 @@ public final class PeerLinkManager {
                     } else if (accepted && (state == PeerConnection.IceConnectionState.FAILED
                         || state == PeerConnection.IceConnectionState.DISCONNECTED
                         || state == PeerConnection.IceConnectionState.CLOSED)) {
-                        if (pcServerMode)
+                        if (pcServerMode) {
+                            // Keep accepted + MQTT host path; only rebuild WebRTC.
+                            directConnected = false;
+                            updateNativeConnection();
                             showStatus("PC Host",
-                                "WebRTC to the PC dropped — MQTT backup active; reconnecting…");
-                        else
+                                "WebRTC blip — host path still live; reconnecting WebRTC…");
+                            handler.removeCallbacks(directRetry);
+                            handler.postDelayed(directRetry, 2000);
+                        } else {
                             showStatus("Relay",
                                 "Direct phone link dropped — game data is on the broker relay.");
-                        handler.removeCallbacks(directRetry);
-                        handler.postDelayed(directRetry, 5000);
+                            handler.removeCallbacks(directRetry);
+                            handler.postDelayed(directRetry, 5000);
+                        }
                     }
                 }
                 @Override public void onIceConnectionReceivingChange(boolean receiving) {}

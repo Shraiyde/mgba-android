@@ -16,9 +16,9 @@ Phone B ──WebRTC──┘
 
 ## Phone UI
 
-- **Join PC Host (PIN)** / Reconnect / Play Offline / Debug logs
+- **Join PC Host (PIN)** / Reconnect / Play Offline — PIN only (no URL/TURN prompts)
 - Status: `PC Host (Direct)` or `PC Host (TURN)`
-- No server URL / TURN typing
+- Brief partner drops keep the PC session; WebRTC re-offers without re-entering the PIN
 
 ## Transports
 

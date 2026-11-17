@@ -6,7 +6,7 @@ Code-reading audit of the Heart & Soul Android app and co-op layer on
 HnS co-op.
 
 Companion ROM classification: [`pokehns-expansion` `docs/coop-flag-audit.md`](https://github.com/Shraiyde/pokehns-expansion/blob/master/docs/coop-flag-audit.md).  
-Phone-failure RCA + Stephen log checklist: [`coop-postmortem.md`](coop-postmortem.md).
+Phone-failure RCA (short): [`coop-postmortem.md`](coop-postmortem.md).
 
 ---
 
