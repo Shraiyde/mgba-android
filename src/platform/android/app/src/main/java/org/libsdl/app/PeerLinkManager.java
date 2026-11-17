@@ -86,6 +86,7 @@ public final class PeerLinkManager {
     private static final int MAX_ENCRYPTED_FRAME_SIZE = 12 + MAX_PEER_FRAME_SIZE + 16;
     private static final int MAX_MQTT_PAYLOAD_SIZE = 16 * 1024;
     private static final int DIRECT_TIMEOUT_MS = 15000;
+    /** No host frame for this long → soft kick the TCP socket (session stays). */
     private static final int PC_DROP_TOLERANCE_MS = 10000;
 
     private static volatile Activity activity;
@@ -139,13 +140,14 @@ public final class PeerLinkManager {
     };
     private final Runnable pcHeartbeat = new Runnable() {
         @Override public void run() {
-            // Legacy MQTT PC heartbeat removed — ZeroTier TCP host beats instead.
+            // Unused — host sends 1s TCP heartbeats; phone only watches them.
         }
     };
     private final Runnable directTimeout = new Runnable() {
         @Override public void run() {
+            // Legacy phone-to-phone Direct path removed for PC host mode.
             if (pcServerMode)
-                return; // ZeroTier TCP path — never WebRTC/TURN/MQTT relay statuses.
+                return;
             if (accepted && !directConnected) {
                 showStatus("Reconnecting…", "Waiting for the peer link…");
                 handler.removeCallbacks(directRetry);
@@ -155,6 +157,7 @@ public final class PeerLinkManager {
     };
     private final Runnable directRetry = new Runnable() {
         @Override public void run() {
+            // Never run Direct/TURN/MQTT relay retries in PC host mode.
             if (pcServerMode || !accepted || sessionKey == null || directConnected)
                 return;
             try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
@@ -166,20 +169,22 @@ public final class PeerLinkManager {
             beginDirectLink(host);
         }
     };
+    /**
+     * PC link watchdog: if the host heartbeat goes silent while the socket
+     * still looks up, kick the socket once so the single PcHostSocket loop
+     * soft-reconnects. Never starts a second connect loop.
+     */
     private final Runnable pcServerWatchdog = new Runnable() {
         @Override public void run() {
             if (!pcServerMode || !retryEnabled) {
                 return;
             }
             if (accepted && lastPcServerHeartbeatAt != 0
-                && System.currentTimeMillis() - lastPcServerHeartbeatAt > PC_DROP_TOLERANCE_MS
-                && !pcTcpConnected) {
-                // Soft hold: keep sessionKey/accepted so partner stays visible;
-                // only surface Reconnecting once while TCP retries.
-                showStatus("Reconnecting…", "Waiting for the PC host…");
-                ensurePcTcpLink();
+                && System.currentTimeMillis() - lastPcServerHeartbeatAt > PC_DROP_TOLERANCE_MS) {
+                if (pcTcpConnected || pcSocket.isConnected())
+                    pcSocket.kick(); // soft resume — session/native state kept
             }
-            handler.postDelayed(this, 2000);
+            handler.postDelayed(this, 1000);
         }
     };
     private final Runnable acceptRetry = new Runnable() {
@@ -264,7 +269,8 @@ public final class PeerLinkManager {
             // Diag / HnsCoop log hooks stay off — Stephen does not want debug logs.
             nativeSetDiagLogs(false);
             manager.pcSocket.setListener(new PcHostSocket.Listener() {
-                @Override public void onReady(int role, int players) {
+                @Override public void onSessionReady(int role, int players) {
+                    // First handshake only — soft resumes must not tear down game state.
                     manager.host = role == 0;
                     if (manager.sessionKey == null)
                         return;
@@ -272,11 +278,10 @@ public final class PeerLinkManager {
                     manager.resetReceiveCounters();
                     manager.accepted = true;
                     manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
-                    manager.pcReconnectToastShown = false;
                     manager.reopenNativeSession();
                     manager.showStatus("Connected to PC host", "Linked to the PC world host.");
                 }
-                @Override public void onConnected() {
+                @Override public void onLinkUp() {
                     manager.pcTcpConnected = true;
                     manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
                     manager.pcReconnectToastShown = false;
@@ -284,18 +289,24 @@ public final class PeerLinkManager {
                     if (manager.accepted)
                         manager.showStatus("Connected to PC host", "Linked to the PC world host.");
                 }
-                @Override public void onDisconnected() {
+                @Override public void onLinkDown() {
                     manager.pcTcpConnected = false;
-                    // Keep accepted/sessionKey so partner sprites stay up during soft resume.
-                    manager.updateNativeConnection();
+                    // Keep accepted/sessionKey/native so partner stays visible during soft resume.
                     if (manager.pcServerMode && manager.accepted && manager.retryEnabled)
                         manager.showStatus("Reconnecting…", "Waiting for the PC host…");
+                }
+                @Override public void onUnreachable() {
+                    manager.pcTcpConnected = false;
+                    manager.retryEnabled = false;
+                    manager.showStatus("PC host unreachable",
+                        "Could not reach the PC host. Check ZeroTier and try Join PC Host again.");
                 }
                 @Override public void onFrame(byte[] encrypted) {
                     manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
                     manager.handleEncryptedFrame(encrypted);
                 }
                 @Override public void onHostBusy() {
+                    manager.retryEnabled = false;
                     manager.showStatus("PC host full", "Two phones are already connected.");
                 }
             });
@@ -540,7 +551,7 @@ public final class PeerLinkManager {
             .apply();
 
         handler.removeCallbacks(pcServerWatchdog);
-        handler.postDelayed(pcServerWatchdog, 2000);
+        handler.postDelayed(pcServerWatchdog, 1000);
         showStatus("Reconnecting…", "Opening link to the PC host…");
         ensurePcTcpLink();
     }
@@ -858,6 +869,7 @@ public final class PeerLinkManager {
                 return;
             }
         }
+        // PcHostSocket owns reconnect; never start a second loop while linked.
         if (pcSocket.isConnected())
             return;
         try {
@@ -865,16 +877,6 @@ public final class PeerLinkManager {
             String hello = "HELLO " + pcClientId + " " + proof;
             pcSocket.connect(pcHostAddress, pcHostPort, hello);
         } catch (Exception ignored) {
-            // Hidden Tailscale fallback stays disabled unless Stephen asks.
-            String fallback = BuiltinPcHostConfig.fallbackHost();
-            if (fallback != null && !fallback.equals(pcHostAddress)) {
-                pcHostAddress = fallback;
-                try {
-                    String proof = BuiltinPcHostConfig.helloProof(pcClientId);
-                    pcSocket.connect(pcHostAddress, pcHostPort, "HELLO " + pcClientId + " " + proof);
-                    return;
-                } catch (Exception ignored2) {}
-            }
             showStatus("Reconnecting…", "Waiting for the PC host…");
         }
     }
@@ -1452,7 +1454,9 @@ public final class PeerLinkManager {
                 // HARD RULE: game data is direct ZeroTier TCP to the PC host only.
                 if (pcSocket.send(encrypted))
                     return true;
-                ensurePcTcpLink();
+                // Do not force a second connect while the socket loop is already retrying.
+                if (!pcSocket.isActive())
+                    ensurePcTcpLink();
                 return false;
             }
             if (directConnected && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {

@@ -13,55 +13,94 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Direct TCP game-data link to the PC World Host over ZeroTier.
- * No MQTT / WebRTC / TURN. Secrets are never logged.
+ * Single persistent TCP link to the PC World Host.
+ * Owns reconnect with backoff. Never starts a second loop while one is alive.
+ * Secrets are never logged.
  */
 final class PcHostSocket {
     interface Listener {
-        void onReady(int role, int players);
-        void onConnected();
-        void onDisconnected();
+        /** First successful handshake for this connect session. */
+        void onSessionReady(int role, int players);
+        /** TCP is up (first connect or soft resume). */
+        void onLinkUp();
+        /** TCP dropped; socket will retry with backoff unless stopped. */
+        void onLinkDown();
+        /** Gave up after sustained failures — one terminal signal. */
+        void onUnreachable();
         void onFrame(byte[] encrypted);
         void onHostBusy();
     }
 
     private static final int MAX_FRAME = 8192;
     private static final int CONNECT_TIMEOUT_MS = 8000;
+    private static final int MAX_FAIL_STREAK = 8; // ~1+2+4+8+16+30+30+30s ≈ 2 min then stop
+    private static final long BACKOFF_START_MS = 1000L;
+    private static final long BACKOFF_CAP_MS = 30000L;
 
     private final ExecutorService io = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "HNS-PcHost-TCP");
         t.setDaemon(true);
         return t;
     });
-    private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean wantRun = new AtomicBoolean(false);
+    private final AtomicBoolean loopAlive = new AtomicBoolean(false);
+    private final Object gate = new Object();
     private volatile Socket socket;
     private volatile DataOutputStream out;
     private volatile Listener listener;
     private volatile String host;
     private volatile int port;
     private volatile String helloLine;
+    private volatile boolean sessionHandshook;
 
     void setListener(Listener listener) {
         this.listener = listener;
     }
 
-    synchronized void connect(String host, int port, String helloLine) {
-        this.host = host;
-        this.port = port;
-        this.helloLine = helloLine;
-        disconnectLocked();
-        running.set(true);
-        io.execute(this::runLoop);
+    /**
+     * Start or keep a single connection loop. No-op if already linked to the
+     * same endpoint. Never queues a second runLoop.
+     */
+    void connect(String host, int port, String helloLine) {
+        synchronized (gate) {
+            boolean same = host != null && host.equals(this.host)
+                && port == this.port
+                && helloLine != null && helloLine.equals(this.helloLine);
+            this.host = host;
+            this.port = port;
+            this.helloLine = helloLine;
+            wantRun.set(true);
+            if (same && isConnected())
+                return; // already on the right link — never reconnect while connected
+            // Kick a stale/wrong socket; the existing loop (if any) will reconnect.
+            disconnectLocked();
+            if (loopAlive.compareAndSet(false, true))
+                io.execute(this::runLoop);
+        }
     }
 
-    synchronized void disconnect() {
-        running.set(false);
-        disconnectLocked();
+    void disconnect() {
+        wantRun.set(false);
+        sessionHandshook = false;
+        synchronized (gate) {
+            disconnectLocked();
+        }
+    }
+
+    /** Force-close the socket so the single loop performs a soft reconnect. */
+    void kick() {
+        synchronized (gate) {
+            disconnectLocked();
+        }
     }
 
     boolean isConnected() {
         Socket s = socket;
         return s != null && s.isConnected() && !s.isClosed();
+    }
+
+    boolean isActive() {
+        return wantRun.get();
     }
 
     boolean send(byte[] encrypted) {
@@ -76,78 +115,117 @@ final class PcHostSocket {
             }
             return true;
         } catch (IOException e) {
-            running.set(false);
+            kick();
             return false;
         }
     }
 
     private void runLoop() {
-        while (running.get()) {
-            Socket s = null;
-            try {
-                s = new Socket();
-                s.setTcpNoDelay(true);
-                s.setKeepAlive(true);
-                s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
-                DataOutputStream output = new DataOutputStream(s.getOutputStream());
-                InputStream rawIn = s.getInputStream();
-                output.write((helloLine + "\n").getBytes(StandardCharsets.UTF_8));
-                output.flush();
+        long backoffMs = BACKOFF_START_MS;
+        int failStreak = 0;
+        boolean announcedDown = false;
+        try {
+            while (wantRun.get()) {
+                Socket s = null;
+                try {
+                    s = new Socket();
+                    s.setTcpNoDelay(true);
+                    s.setKeepAlive(true);
+                    s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                    DataOutputStream output = new DataOutputStream(s.getOutputStream());
+                    InputStream rawIn = s.getInputStream();
+                    output.write((helloLine + "\n").getBytes(StandardCharsets.UTF_8));
+                    output.flush();
 
-                // Byte-at-a-time so we never buffer past the READY line into frame data.
-                String ready = readLineExact(rawIn);
-                if (ready == null)
-                    throw new IOException("closed before READY");
-                if (ready.startsWith("FULL")) {
-                    Listener busy = listener;
-                    if (busy != null)
-                        busy.onHostBusy();
-                    running.set(false);
-                    break;
-                }
-                if (!ready.startsWith("READY "))
-                    throw new IOException("bad handshake");
-                String[] parts = ready.split(" ");
-                int role = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
-                int players = parts.length > 2 ? Integer.parseInt(parts[2]) : 1;
-
-                DataInputStream input = new DataInputStream(rawIn);
-                synchronized (this) {
-                    socket = s;
-                    out = output;
-                }
-                Listener l = listener;
-                if (l != null) {
-                    l.onReady(role, players);
-                    l.onConnected();
-                }
-
-                while (running.get()) {
-                    int len = input.readInt();
-                    if (len < 16 || len > MAX_FRAME)
+                    String ready = readLineExact(rawIn);
+                    if (ready == null)
+                        throw new IOException("closed before READY");
+                    if (ready.startsWith("FULL")) {
+                        Listener busy = listener;
+                        if (busy != null)
+                            busy.onHostBusy();
+                        wantRun.set(false);
                         break;
-                    byte[] frame = new byte[len];
-                    input.readFully(frame);
-                    Listener recv = listener;
-                    if (recv != null)
-                        recv.onFrame(frame);
-                }
-            } catch (Exception ignored) {
-            } finally {
-                try { if (s != null) s.close(); } catch (Exception ignored) {}
-                synchronized (this) {
-                    if (socket == s) {
-                        socket = null;
-                        out = null;
+                    }
+                    if (!ready.startsWith("READY "))
+                        throw new IOException("bad handshake");
+                    String[] parts = ready.split(" ");
+                    int role = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+                    int players = parts.length > 2 ? Integer.parseInt(parts[2]) : 1;
+
+                    DataInputStream input = new DataInputStream(rawIn);
+                    synchronized (gate) {
+                        socket = s;
+                        out = output;
+                    }
+                    failStreak = 0;
+                    backoffMs = BACKOFF_START_MS;
+                    announcedDown = false;
+                    Listener l = listener;
+                    boolean first = !sessionHandshook;
+                    sessionHandshook = true;
+                    if (l != null) {
+                        if (first)
+                            l.onSessionReady(role, players);
+                        l.onLinkUp();
+                    }
+
+                    while (wantRun.get()) {
+                        int len = input.readInt();
+                        if (len < 16 || len > MAX_FRAME)
+                            break;
+                        byte[] frame = new byte[len];
+                        input.readFully(frame);
+                        Listener recv = listener;
+                        if (recv != null)
+                            recv.onFrame(frame);
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    try { if (s != null) s.close(); } catch (Exception ignored) {}
+                    synchronized (gate) {
+                        if (socket == s) {
+                            socket = null;
+                            out = null;
+                        }
                     }
                 }
-                Listener l = listener;
-                if (l != null && running.get())
-                    l.onDisconnected();
+
+                if (!wantRun.get())
+                    break;
+
+                if (!announcedDown) {
+                    announcedDown = true;
+                    Listener l = listener;
+                    if (l != null)
+                        l.onLinkDown();
+                }
+
+                failStreak++;
+                if (failStreak >= MAX_FAIL_STREAK) {
+                    wantRun.set(false);
+                    Listener l = listener;
+                    if (l != null)
+                        l.onUnreachable();
+                    break;
+                }
+
+                try {
+                    Thread.sleep(backoffMs);
+                } catch (InterruptedException ignored) {
+                    break;
+                }
+                backoffMs = Math.min(backoffMs * 2, BACKOFF_CAP_MS);
             }
-            if (!running.get())
-                break;
-            try { Thread.sleep(2000); } catch (InterruptedException ignored) { break; }
+        } finally {
+            sessionHandshook = false;
+            synchronized (gate) {
+                disconnectLocked();
+            }
+            loopAlive.set(false);
+            // If connect() raced and re-armed wantRun, start exactly one new loop.
+            if (wantRun.get() && loopAlive.compareAndSet(false, true))
+                io.execute(this::runLoop);
         }
     }
 

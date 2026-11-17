@@ -75,6 +75,7 @@ internal static class Program
         Console.WriteLine("=========================");
         Console.WriteLine("Mode:       ZeroTier direct TCP (baked credentials; no PIN / MQTT / TURN)");
         Console.WriteLine("Listen:     TCP *:" + _listenPort + " (all interfaces)");
+        Console.WriteLine("Heartbeat:  1s  |  phone soft-resume timeout: 10s");
         Console.WriteLine("ZeroTier:  " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — is ZeroTier running?)"));
         Console.WriteLine("Tailscale: " + (ts.Length > 0 ? string.Join(", ", ts) : "(not detected)"));
         Console.WriteLine("Protocol:  v" + ProtocolVersion);
@@ -240,6 +241,7 @@ internal static class Program
             if (!FixedEquals(BuiltinPcHostConfig.HelloProof(clientId), proof))
                 return;
 
+            NetworkStream? staleStream = null;
             await Gate.WaitAsync(token);
             try
             {
@@ -262,12 +264,23 @@ internal static class Program
                 }
                 else
                 {
+                    // Same player resumed: replace the stale socket — never keep two.
+                    lock (slot.StreamLock)
+                    {
+                        staleStream = slot.Stream;
+                        slot.Stream = null;
+                    }
                     slot.LastSeenUtc = DateTime.UtcNow;
                     slot.Connected = true;
-                    Console.WriteLine($"[player] {Short(clientId)} resumed.");
+                    Console.WriteLine($"[player] {Short(clientId)} resumed (replaced stale socket).");
                 }
             }
             finally { Gate.Release(); }
+
+            if (staleStream != null)
+            {
+                try { staleStream.Close(); } catch { }
+            }
 
             lock (slot.StreamLock)
                 slot.Stream = stream;
@@ -390,7 +403,7 @@ internal static class Program
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(3), token);
+                await Task.Delay(TimeSpan.FromSeconds(1), token);
                 byte[] beat = BuildPeerFrame(MsgWorldReady, Array.Empty<byte>());
                 foreach (ClientSlot client in Clients.Values.Where(c => c.Connected && HasStream(c)))
                     await DeliverHostFrame(client, beat);

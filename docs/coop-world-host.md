@@ -17,7 +17,10 @@ Phone B ──TCP──┘
 - **No MQTT**, **no WebRTC**, **no TURN**, **no relay**, **no UPnP**.
 - **No PIN / address typing** on phones — one tap **Join PC Host**.
 - Host address, port, and shared auth secret are baked into APK + host.
-- Status: **Connected to PC host** / **Reconnecting…**.
+- Status: **Connected to PC host** / **Reconnecting…** (once each) / **PC host unreachable** (terminal).
+- One persistent TCP link with **1 s** host heartbeats and **10 s** soft-resume tolerance.
+- Reconnect uses backoff; never flaps; never opens a second socket while linked.
+- Host replaces a stale socket for the same phone instead of kicking both.
 
 ## Petra — ZeroTier on the phone
 
