@@ -24,6 +24,7 @@ import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.json.JSONObject;
+import org.webrtc.CandidatePairChangeEvent;
 import org.webrtc.DataChannel;
 import org.webrtc.IceCandidate;
 import org.webrtc.MediaConstraints;
@@ -234,6 +235,8 @@ public final class PeerLinkManager {
     private volatile boolean accepted;
     private volatile boolean joinSent;
     private volatile boolean directConnected;
+    /** True when the selected ICE pair uses a TURN relay candidate. */
+    private volatile boolean directViaTurn;
     private volatile boolean nativeConnected;
     private volatile KeyPair ecdhKeyPair;
     private volatile byte[] pinKey;
@@ -381,7 +384,7 @@ public final class PeerLinkManager {
         content.addView(passInput);
         new AlertDialog.Builder(activity)
             .setTitle("Optional TURN server")
-            .setMessage("Default is free public STUN only. Add your own TURN URI if Direct fails behind strict NATs. Leave blank to disable. No paid service is bundled.")
+            .setMessage("A built-in TURN server is already ON by default for Direct. Optionally add your own TURN URI (user/pass) to use alongside it. Leave blank to keep only the built-in servers.")
             .setView(content)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save", (d, w) -> {
@@ -391,8 +394,8 @@ public final class PeerLinkManager {
                     .putString(PREF_TURN_PASS, passInput.getText().toString())
                     .apply();
                 showStatus("TURN", uriInput.getText().toString().trim().isEmpty()
-                    ? "Custom TURN cleared — STUN only."
-                    : "Custom TURN saved for the next Direct attempt.");
+                    ? "Custom TURN cleared — built-in TURN remains the default."
+                    : "Custom TURN saved; it is added alongside the built-in servers.");
             })
             .show();
     }
@@ -402,6 +405,17 @@ public final class PeerLinkManager {
         servers.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
         servers.add(PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer());
         servers.add(PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer());
+        /* Built-in Metered ICE (STUN + TURN variants) — ON by default. */
+        String builtinUser = BuiltinTurnConfig.username();
+        String builtinPass = BuiltinTurnConfig.credential();
+        for (String url : BuiltinTurnConfig.URLS) {
+            PeerConnection.IceServer.Builder b = PeerConnection.IceServer.builder(url);
+            if (url.startsWith("turn:") || url.startsWith("turns:")) {
+                b.setUsername(builtinUser);
+                b.setPassword(builtinPass);
+            }
+            servers.add(b.createIceServer());
+        }
         Context prefsContext = activity != null ? activity : appContext;
         if (prefsContext == null)
             return servers;
@@ -409,6 +423,7 @@ public final class PeerLinkManager {
         String turnUri = prefs.getString(PREF_TURN_URI, "");
         if (turnUri == null || turnUri.trim().isEmpty())
             return servers;
+        /* Optional user TURN adds/overrides alongside the built-in set. */
         String user = prefs.getString(PREF_TURN_USER, "");
         String pass = prefs.getString(PREF_TURN_PASS, "");
         PeerConnection.IceServer.Builder turn = PeerConnection.IceServer.builder(turnUri.trim());
@@ -418,6 +433,27 @@ public final class PeerLinkManager {
             turn.setPassword(pass);
         servers.add(turn.createIceServer());
         return servers;
+    }
+
+    private void announceDirectLink() {
+        if (directViaTurn)
+            showStatus("Direct (TURN)",
+                "Phone-to-phone link is active via TURN relay. Game data stays off the MQTT broker.");
+        else
+            showStatus("Direct",
+                "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
+    }
+
+    private static boolean candidateLooksLikeRelay(IceCandidate candidate) {
+        if (candidate == null || candidate.sdp == null)
+            return false;
+        String sdp = candidate.sdp;
+        return sdp.contains(" typ relay ") || sdp.endsWith(" typ relay")
+            || sdp.contains(" typ relay\r") || sdp.contains(" typ relay\n");
+    }
+
+    private void refreshDirectViaTurnFromPair(IceCandidate local, IceCandidate remote) {
+        directViaTurn = candidateLooksLikeRelay(local) || candidateLooksLikeRelay(remote);
     }
 
     private void showJoinPinDialog() {
@@ -1080,7 +1116,7 @@ public final class PeerLinkManager {
                     if (directConnected) {
                         handler.removeCallbacks(directTimeout);
                         handler.removeCallbacks(directRetry);
-                        showStatus("Direct", "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
+                        announceDirectLink();
                     } else if (accepted && (state == PeerConnection.IceConnectionState.FAILED
                         || state == PeerConnection.IceConnectionState.DISCONNECTED
                         || state == PeerConnection.IceConnectionState.CLOSED)) {
@@ -1092,6 +1128,13 @@ public final class PeerLinkManager {
                 }
                 @Override public void onIceConnectionReceivingChange(boolean receiving) {}
                 @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {}
+                @Override public void onSelectedCandidatePairChanged(CandidatePairChangeEvent event) {
+                    if (event == null)
+                        return;
+                    refreshDirectViaTurnFromPair(event.local, event.remote);
+                    if (directConnected)
+                        announceDirectLink();
+                }
                 @Override public void onIceCandidate(IceCandidate candidate) {
                     try {
                         JSONObject value = new JSONObject();
@@ -1180,7 +1223,7 @@ public final class PeerLinkManager {
                 if (directConnected) {
                     handler.removeCallbacks(directTimeout);
                     handler.removeCallbacks(directRetry);
-                    showStatus("Direct", "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
+                    announceDirectLink();
                 } else if (accepted && channel.state() != DataChannel.State.CONNECTING) {
                     showStatus("Relay",
                         "Direct phone link unavailable — game data is on the broker relay.");
@@ -1479,6 +1522,7 @@ public final class PeerLinkManager {
         peerConnection = null;
         dataChannel = null;
         directConnected = false;
+        directViaTurn = false;
         pendingCandidates.clear();
         sendCounter.set(1);
         resetReceiveCounters();

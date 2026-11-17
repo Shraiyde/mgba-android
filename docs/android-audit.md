@@ -17,8 +17,8 @@ mailbox v12 (position + on-change follower / flags / vars / config / ready /
 resync), SIO link cable, Documents saves, portrait+landscape touch overlay,
 and audio/frame pacing ownership off audio sync.
 
-Remaining: optional TURN **infra** (user must supply a TURN URI; none is
-bundled), and very low-priority polish.
+Remaining: very low-priority polish. Built-in Metered TURN is ON by default;
+optional custom TURN URI still available in co-op options.
 
 ---
 
@@ -47,7 +47,7 @@ must re-pair with a new 6-digit PIN.
 
 | Area | Status |
 | --- | --- |
-| Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | Solid; optional TURN field (default off) |
+| Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | Solid; built-in TURN default; optional custom TURN |
 | Mailbox I/O | Replace-same-id on full ring + WORLD_RESYNC request |
 | Avatar / presence | Solid; resume re-sync; v12 partner follower on-change |
 | Battle disconnect | SIO + ROM abort; no separate BATTLE_* opcodes |
@@ -70,7 +70,7 @@ must re-pair with a new 6-digit PIN.
 | P1 | SIO_RESYNC receive-only | Send on queue overflow |
 | P1 | Inbound mailbox ring-full silent drop | Replace same flag/var id in ring; else `WORLD_RESYNC` + local requeue |
 | P1 | 4-digit PIN entropy | **6-digit** PIN + selectable host PIN dialog |
-| P1 | No TURN path | Optional TURN URI/user/pass prefs (default empty = STUN only) |
+| P1 | No TURN path | Built-in Metered TURN ON by default; optional custom URI still adds |
 | P1 | Verbose diagnostic spam | `PREF_DIAG_LOGS` + `nativeSetDiagLogs` |
 | P2 | Unused BATTLE_*/CHAT opcodes | Removed from enum; 18–22 reserved; `WORLD_RESYNC=30` |
 | P2 | Hide-toggle vs R / stick clamp | Prior pass |
@@ -81,7 +81,7 @@ must re-pair with a new 6-digit PIN.
 
 | Pri | Issue | Notes |
 | --- | --- | --- |
-| P1 | TURN **infrastructure** | App accepts a user-supplied `turn:` URI. Free public STUN is built in. A working TURN still needs a host you control (e.g. coturn) or a free-tier TURN provider account — **not** bundled or paid-for here. |
+| P2 | Custom TURN override UX | Built-in Metered TURN is default; custom URI still optional |
 | P2 | Public EMQX broker | Shared public broker; 6-digit PIN + PBKDF2 mitigate; private broker would be stronger |
 | P2 | `threadedVideo` forced off | Intentional diagnostic choice |
 | — | Upstream SDL TODOs | Ignored |
