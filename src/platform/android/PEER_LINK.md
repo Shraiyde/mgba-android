@@ -1,3 +1,8 @@
+# Heart & Soul peer link
+
+**Primary path:** Windows **World Host** (`tools/HeartSoulWorldHost`) — see `docs/coop-world-host.md`.
+Phones: Co-op → Join PC Host (PIN). Status: `PC Host (Direct)` / `PC Host (TURN)`.
+
 # Android peer-link
 
 The Android app supports a four-digit PIN room hosted by the Windows PC server:

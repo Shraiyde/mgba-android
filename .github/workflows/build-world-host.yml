@@ -1,0 +1,53 @@
+name: Build Heart & Soul World Host
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'tools/HeartSoulWorldHost/**'
+      - '.github/workflows/build-world-host.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-world-host:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish self-contained Windows host
+        shell: pwsh
+        run: |
+          dotnet publish tools/HeartSoulWorldHost/HeartSoulWorldHost.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output publish-world-host
+          Copy-Item tools/HeartSoulWorldHost/Start-WorldHost.bat publish-world-host/
+          Copy-Item tools/HeartSoulWorldHost/README.md publish-world-host/
+          Compress-Archive -Path publish-world-host\* -DestinationPath HeartSoulWorldHost-win-x64.zip -Force
+
+      - name: Create GitHub Release with ZIP
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "world-host-${{ github.run_number }}"
+          gh release create $tag HeartSoulWorldHost-win-x64.zip `
+            --repo "${{ github.repository }}" `
+            --target "${{ github.sha }}" `
+            --title "Heart & Soul World Host ${{ github.run_number }}" `
+            --notes "Windows x64 world host. Unzip, run Start-WorldHost.bat, enter the 6-digit ROOM PIN on both phones (Join PC Host). WebRTC to the PC with built-in Metered TURN; MQTT is signaling only. Optional LAN TCP 27770." `
+            --latest=false

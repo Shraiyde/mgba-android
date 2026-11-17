@@ -171,7 +171,7 @@ public final class PeerLinkManager {
         @Override public void run() {
             if (pcServerMode) {
                 if (accepted && lastPcServerHeartbeatAt != 0
-                    && System.currentTimeMillis() - lastPcServerHeartbeatAt > 30000) {
+                    && System.currentTimeMillis() - lastPcServerHeartbeatAt > 90000) {
                     accepted = false;
                     pcHelloSent = false;
                     sessionKey = null;
@@ -287,11 +287,7 @@ public final class PeerLinkManager {
         String savedSession = prefs.getString(PREF_SESSION, null);
         if (savedPin == null || !savedPin.matches(PIN_PATTERN))
             return;
-        if ("host".equals(savedRole))
-            startHost(savedPin, savedSession);
-        else if ("join".equals(savedRole))
-            startJoin(savedPin);
-        else if ("pc".equals(savedRole))
+        if ("pc".equals(savedRole))
             startPcServerJoin(savedPin);
     }
 
@@ -331,32 +327,21 @@ public final class PeerLinkManager {
         String savedSession = prefs.getString(PREF_SESSION, null);
 
         List<String> choices = new ArrayList<>();
-        choices.add("PC Server");
-        choices.add("Join another phone");
+        choices.add("Join PC Host (PIN)");
         if ("pc".equals(savedRole) && savedPin != null)
-            choices.add("Reconnect to PC Server");
-        else if ("host".equals(savedRole) && savedPin != null)
-            choices.add("Reconnect as Host");
-        else if ("join".equals(savedRole) && savedPin != null)
-            choices.add("Reconnect");
+            choices.add("Reconnect to PC Host");
         boolean diagOn = prefs.getBoolean(PREF_DIAG_LOGS, false);
         choices.add(diagOn ? "Debug logs: ON" : "Debug logs: OFF");
         choices.add("Play Offline");
 
         new AlertDialog.Builder(activity)
-            .setTitle("Heart & Soul Co-op — Co-op Options")
+            .setTitle("Heart & Soul Co-op")
             .setItems(choices.toArray(new String[0]), (dialog, which) -> {
                 String choice = choices.get(which);
-                if ("PC Server".equals(choice))
+                if ("Join PC Host (PIN)".equals(choice))
                     showPcServerPinDialog();
-                else if ("Join another phone".equals(choice))
-                    showJoinPinDialog();
-                else if ("Reconnect to PC Server".equals(choice))
+                else if ("Reconnect to PC Host".equals(choice))
                     startPcServerJoin(savedPin);
-                else if ("Reconnect as Host".equals(choice))
-                    startHost(savedPin, savedSession);
-                else if ("Reconnect".equals(choice))
-                    startJoin(savedPin);
                 else if (choice.startsWith("Debug logs:")) {
                     boolean next = !diagOn;
                     prefs.edit().putBoolean(PREF_DIAG_LOGS, next).apply();
@@ -397,6 +382,15 @@ public final class PeerLinkManager {
     }
 
     private void announceDirectLink() {
+        if (pcServerMode) {
+            if (directViaTurn)
+                showStatus("PC Host (TURN)",
+                    "Connected to the PC world host via TURN. Game data is host-authoritative.");
+            else
+                showStatus("PC Host (Direct)",
+                    "Connected to the PC world host. Game data is host-authoritative.");
+            return;
+        }
         if (directViaTurn)
             showStatus("Direct (TURN)",
                 "Phone-to-phone link is active via TURN relay. Game data stays off the MQTT broker.");
@@ -498,7 +492,7 @@ public final class PeerLinkManager {
         pinInput.setTextSize(28);
 
         new AlertDialog.Builder(activity)
-            .setTitle("Enter the PC server PIN")
+            .setTitle("Enter the PC Host PIN")
             .setView(pinInput)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Connect", (dialog, which) -> {
@@ -536,7 +530,7 @@ public final class PeerLinkManager {
 
         connectMqtt(() -> {
             subscribe(pcRoomTopic());
-            showStatus("Connecting to PC server", "Looking for server PIN " + pin + "…");
+            showStatus("Connecting to PC Host", "Looking for world host PIN " + pin + "…");
         });
     }
 
@@ -770,6 +764,8 @@ public final class PeerLinkManager {
             if (pcServerMode) {
                 if (topic.equals(pcRoomTopic())) {
                     handlePcRoomAdvertisement(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
+                } else if (topic.equals(pcSignalDownTopic())) {
+                    handleWorldHostSignal(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 } else if (topic.equals(pcDownControlTopic())) {
                     handlePcServerControl(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 } else if (topic.equals(pcDownFrameTopic())) {
@@ -802,7 +798,10 @@ public final class PeerLinkManager {
     }
 
     private void handlePcRoomAdvertisement(JSONObject advert) throws Exception {
-        if (!pcServerMode || !"pc-room".equals(advert.optString("type")))
+        if (!pcServerMode)
+            return;
+        String advertType = advert.optString("type");
+        if (!"world-host".equals(advertType) && !"pc-room".equals(advertType))
             return;
         long timestamp = advert.optLong("timestamp", 0);
         if (timestamp == 0 || System.currentTimeMillis() - timestamp > 30000)
@@ -832,9 +831,9 @@ public final class PeerLinkManager {
         sendCounter.set(1);
         resetReceiveCounters();
         ecdhKeyPair = createEcdhKeyPair();
-        subscribe(pcDownControlTopic(), pcDownFrameTopic());
+        subscribe(pcDownControlTopic(), pcDownFrameTopic(), pcSignalDownTopic());
         sendPcHello();
-        showStatus("PC server found", "Authenticating with the server and waiting for the other player…");
+        showStatus("PC Host found", "Authenticating… WebRTC to the world host comes next.");
     }
 
     private void sendPcHello() {
@@ -845,7 +844,7 @@ public final class PeerLinkManager {
             JSONObject hello = new JSONObject();
             hello.put("type", "hello");
             hello.put("pub", publicKey);
-            hello.put("proof", hmacText(pinKey, sessionId + "|" + pcClientId + "|" + publicKey));
+            hello.put("proof", hmacText(pinKey, sessionId + "|" + pcClientId + "|hello"));
             pcHelloSent = publish(pcUpHelloTopic(), hello.toString().getBytes(StandardCharsets.UTF_8), 1, false);
             handler.removeCallbacks(pcHeartbeat);
             if (pcHelloSent)
@@ -869,34 +868,43 @@ public final class PeerLinkManager {
         if ("server-heartbeat".equals(type)) {
             lastPcServerHeartbeatAt = System.currentTimeMillis();
         } else if ("waiting".equals(type)) {
-            showStatus("Waiting for companion", "The PC server is ready. Waiting for the second phone…");
+            if (data != null && data.optBoolean("worldHost", false))
+                applyWorldHostSessionKey(data.optString("sessionKey", null));
+            showStatus("Waiting for companion", "PC Host is ready. Waiting for the second phone…");
+        } else if ("presence-resync".equals(type)) {
+            nativeRequestStoryResync();
         } else if ("peer".equals(type) && data != null) {
             String peerId = data.getString("client");
-            String peerPublicKey = data.getString("pub");
-            String proof = data.getString("proof");
-            String expected = hmacText(pinKey, sessionId + "|" + peerId + "|" + peerPublicKey);
-            if (!constantTimeEquals(expected, proof))
-                return;
+            boolean worldHost = data.optBoolean("worldHost", false);
             boolean assignedHost = data.optInt("role", 0) == 0;
-            // QoS 1 MQTT delivery may duplicate a control packet. Re-deriving
-            // the same key and resetting the GCM counter would reuse nonces.
-            if (accepted && sessionKey != null && peerId.equals(pcPeerId)
-                && peerPublicKey.equals(pcPeerPublicKey))
+            if (accepted && sessionKey != null && peerId.equals(pcPeerId))
                 return;
-            // Stop queued sends under the old key before resetting its nonce
-            // counter or publishing the new session key.
             accepted = false;
-            sessionKey = null;
-            byte[] shared = deriveSharedSecret(ecdhKeyPair, peerPublicKey);
-            sessionKey = deriveSessionKey(shared, pinKey, sessionId);
+            if (worldHost) {
+                String proof = data.optString("proof", "");
+                String expected = hmacText(pinKey, sessionId + "|" + pcClientId + "|peer");
+                if (!constantTimeEquals(expected, proof))
+                    return;
+                applyWorldHostSessionKey(data.optString("sessionKey", null));
+                pcPeerPublicKey = "world-host";
+            } else {
+                String peerPublicKey = data.getString("pub");
+                String proof = data.getString("proof");
+                String expected = hmacText(pinKey, sessionId + "|" + peerId + "|" + peerPublicKey);
+                if (!constantTimeEquals(expected, proof))
+                    return;
+                sessionKey = null;
+                byte[] shared = deriveSharedSecret(ecdhKeyPair, peerPublicKey);
+                sessionKey = deriveSessionKey(shared, pinKey, sessionId);
+                pcPeerPublicKey = peerPublicKey;
+            }
             pcPeerId = peerId;
-            pcPeerPublicKey = peerPublicKey;
             host = assignedHost;
             sendCounter.set(1);
             resetReceiveCounters();
             accepted = true;
             reopenNativeSession();
-            beginDirectLink(host);
+            beginDirectLink(true);
         } else if ("peer-disconnected".equals(type)) {
             handler.removeCallbacks(directTimeout);
             handler.removeCallbacks(directRetry);
@@ -1086,8 +1094,12 @@ public final class PeerLinkManager {
                     } else if (accepted && (state == PeerConnection.IceConnectionState.FAILED
                         || state == PeerConnection.IceConnectionState.DISCONNECTED
                         || state == PeerConnection.IceConnectionState.CLOSED)) {
-                        showStatus("Relay",
-                            "Direct phone link dropped — game data is on the broker relay.");
+                        if (pcServerMode)
+                            showStatus("PC Host",
+                                "WebRTC to the PC dropped — MQTT backup active; reconnecting…");
+                        else
+                            showStatus("Relay",
+                                "Direct phone link dropped — game data is on the broker relay.");
                         handler.removeCallbacks(directRetry);
                         handler.postDelayed(directRetry, 5000);
                     }
@@ -1158,9 +1170,13 @@ public final class PeerLinkManager {
         handler.removeCallbacks(directRetry);
         directViaTurn = false;
         handler.postDelayed(directTimeout, DIRECT_TIMEOUT_MS);
-        showStatus("Trying Direct (built-in TURN ready)",
-            "Phone-to-phone WebRTC with Metered TURN; MQTT relay is backup until Direct connects.");
-        createPeerConnection(offerer);
+        if (pcServerMode)
+            showStatus("PC Host",
+                "Trying Direct (built-in TURN ready) — connecting WebRTC to the PC world host…");
+        else
+            showStatus("Trying Direct (built-in TURN ready)",
+                "Phone-to-phone WebRTC with Metered TURN; MQTT relay is backup until Direct connects.");
+        createPeerConnection(pcServerMode || offerer);
     }
 
     private void createAnswer() {
@@ -1219,6 +1235,24 @@ public final class PeerLinkManager {
 
     private void sendSignal(String type, String value) {
         try {
+            if (pcServerMode) {
+                // World host signaling: plain offer/ice JSON on signal/.../up.
+                JSONObject message = new JSONObject();
+                if ("offer".equals(type) || "answer".equals(type)) {
+                    message.put("type", type);
+                    message.put("sdp", value);
+                } else if ("ice".equals(type)) {
+                    JSONObject candidate = new JSONObject(value);
+                    message.put("type", "ice");
+                    message.put("candidate", candidate.getString("sdp"));
+                    message.put("sdpMid", candidate.optString("mid", "0"));
+                    message.put("sdpMLineIndex", candidate.optInt("line", 0));
+                } else {
+                    return;
+                }
+                publish(pcSignalUpTopic(), message.toString().getBytes(StandardCharsets.UTF_8), 1, false);
+                return;
+            }
             JSONObject message = new JSONObject();
             message.put("type", type);
             message.put("session", sessionId);
@@ -1377,16 +1411,16 @@ public final class PeerLinkManager {
         }
     }
 
-    private String pcRootTopic() { return "hns/johto-pc/" + pin + "/" + sessionId; }
-    private String pcRoomTopic() { return "hns/johto-pc/" + pin + "/room"; }
+    private String pcRootTopic() { return "hns/johto-world/" + pin + "/" + sessionId; }
+    private String pcRoomTopic() { return "hns/johto-world/" + pin + "/room"; }
     private String pcUpHelloTopic() { return pcRootTopic() + "/up/" + pcClientId + "/hello"; }
     private String pcUpHeartbeatTopic() { return pcRootTopic() + "/up/" + pcClientId + "/heartbeat"; }
     private String pcUpFrameTopic() { return pcRootTopic() + "/up/" + pcClientId + "/frame"; }
     private String pcUpLeaveTopic() { return pcRootTopic() + "/up/" + pcClientId + "/leave"; }
     private String pcDownControlTopic() { return pcRootTopic() + "/down/" + pcClientId + "/control"; }
     private String pcDownFrameTopic() { return pcRootTopic() + "/down/" + pcClientId + "/frame"; }
-    private String pcWebRtcToHostTopic() { return pcRootTopic() + "/webrtc/to-host"; }
-    private String pcWebRtcToJoinTopic() { return pcRootTopic() + "/webrtc/to-join"; }
+    private String pcSignalUpTopic() { return pcRootTopic() + "/signal/" + pcClientId + "/up"; }
+    private String pcSignalDownTopic() { return pcRootTopic() + "/signal/" + pcClientId + "/down"; }
 
     private String roomTopic() { return "hns/johto/" + pin + "/room"; }
     private String toHostTopic() { return "hns/johto/" + pin + "/" + sessionId + "/to-host"; }
@@ -1396,13 +1430,13 @@ public final class PeerLinkManager {
 
     private String signalOutTopic() {
         if (pcServerMode)
-            return host ? pcWebRtcToJoinTopic() : pcWebRtcToHostTopic();
+            return pcSignalUpTopic();
         return host ? toJoinTopic() : toHostTopic();
     }
 
     private String signalInTopic() {
         if (pcServerMode)
-            return host ? pcWebRtcToHostTopic() : pcWebRtcToJoinTopic();
+            return pcSignalDownTopic();
         return host ? toHostTopic() : toJoinTopic();
     }
 
