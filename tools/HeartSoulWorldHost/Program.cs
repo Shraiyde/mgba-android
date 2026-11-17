@@ -6,14 +6,12 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 
 namespace HeartSoulWorldHost;
 
 /// <summary>
-/// ZeroTier/Tailscale Minecraft-style world host: phones connect with plain TCP.
-/// No MQTT, no WebRTC, no TURN, no relay, no UPnP/public port-forward.
-/// PIN authenticates; phones use the host's ZeroTier (or Tailscale) IP.
+/// ZeroTier Minecraft-style world host: phones one-tap join with baked credentials.
+/// No MQTT, WebRTC, TURN, UPnP, PIN entry, or relay. Shared secret never logged.
 /// </summary>
 internal sealed class ClientSlot
 {
@@ -28,14 +26,9 @@ internal sealed class ClientSlot
     public int Role { get; set; } = -1;
 }
 
-internal sealed class RoomConfig
-{
-    public string? Pin { get; set; }
-}
-
 internal static class Program
 {
-    private const int ProtocolVersion = 6;
+    private const int ProtocolVersion = 7;
     private const uint PeerMagic = 0x4D504C4Bu;
     private const ushort PeerVersion = 1;
     private const int HostSenderId = 2;
@@ -54,9 +47,7 @@ internal static class Program
 
     private static readonly ConcurrentDictionary<string, ClientSlot> Clients = new();
     private static readonly SemaphoreSlim Gate = new(1, 1);
-    private static byte[] _pinKey = [];
     private static byte[] _sessionKey = [];
-    private static string _pin = "";
     private static long _hostSendCounter = 1;
     private static int _hostFrameSeq = 1;
     private static CancellationTokenSource _stop = new();
@@ -65,7 +56,7 @@ internal static class Program
     private static async Task Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
-        _listenPort = BuiltinPcHostConfig.DefaultPort();
+        _listenPort = BuiltinPcHostConfig.Port();
 
         if (args.Length >= 1 && args[0].Equals("--add-firewall", StringComparison.OrdinalIgnoreCase))
         {
@@ -74,44 +65,22 @@ internal static class Program
             return;
         }
 
-        string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HeartSoulWorldHost");
-        Directory.CreateDirectory(root);
-        string configPath = Path.Combine(root, "host.json");
-        bool resetPin = args.Any(a => a.Equals("--new-pin", StringComparison.OrdinalIgnoreCase));
-
-        RoomConfig config = File.Exists(configPath)
-            ? JsonSerializer.Deserialize<RoomConfig>(await File.ReadAllTextAsync(configPath)) ?? new RoomConfig()
-            : new RoomConfig();
-
-        if (resetPin || string.IsNullOrWhiteSpace(config.Pin) || config.Pin.Length != 6 || config.Pin.Any(c => !char.IsAsciiDigit(c)))
-        {
-            config.Pin = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
-            await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
-        }
-
-        _pin = config.Pin!;
-        _pinKey = BuiltinPcHostConfig.DerivePinKey(_pin);
-        _sessionKey = BuiltinPcHostConfig.DeriveSessionKey(_pinKey);
-
+        _sessionKey = BuiltinPcHostConfig.SessionKey();
         EnsureFirewallRule(_listenPort);
 
         string[] zt = CollectAdapterIps("ZeroTier");
         string[] ts = CollectAdapterIps("Tailscale");
-        string preferred = zt.FirstOrDefault() ?? ts.FirstOrDefault() ?? BuiltinPcHostConfig.DefaultHost();
 
         Console.WriteLine("HEART & SOUL — WORLD HOST");
         Console.WriteLine("=========================");
-        Console.WriteLine("Mode:        ZeroTier/Tailscale direct TCP (no MQTT / TURN / UPnP)");
-        Console.WriteLine("ROOM PIN:    " + _pin);
-        Console.WriteLine("Listen:      TCP *:" + _listenPort + " (all interfaces)");
-        Console.WriteLine("ZeroTier:   " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — is ZeroTier running?)"));
-        Console.WriteLine("Tailscale:  " + (ts.Length > 0 ? string.Join(", ", ts) : "(not detected)"));
-        Console.WriteLine("Phones use: " + preferred + ":" + _listenPort);
-        Console.WriteLine("Protocol:   v" + ProtocolVersion);
+        Console.WriteLine("Mode:       ZeroTier direct TCP (baked credentials; no PIN / MQTT / TURN)");
+        Console.WriteLine("Listen:     TCP *:" + _listenPort + " (all interfaces)");
+        Console.WriteLine("ZeroTier:  " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — is ZeroTier running?)"));
+        Console.WriteLine("Tailscale: " + (ts.Length > 0 ? string.Join(", ", ts) : "(not detected)"));
+        Console.WriteLine("Protocol:  v" + ProtocolVersion);
         Console.WriteLine();
-        Console.WriteLine("Phones: Co-op → Join PC Host → enter this PIN.");
-        Console.WriteLine("Host address on phones defaults to " + BuiltinPcHostConfig.DefaultHost() + ":" + _listenPort + " (advanced field).");
-        Console.WriteLine("PIN file: " + configPath + "  (--new-pin to rotate)");
+        Console.WriteLine("Phones: Co-op → Join PC Host (one tap — credentials are built into the APK).");
+        Console.WriteLine("Both phones must be on Stephen's ZeroTier network.");
         Console.WriteLine("Press Ctrl+C to stop.");
         Console.WriteLine();
 
@@ -268,7 +237,7 @@ internal static class Program
             if (clientId.Length is < 8 or > 64
                 || clientId.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-'))
                 return;
-            if (!FixedEquals(BuiltinPcHostConfig.HelloProof(_pinKey, clientId), proof))
+            if (!FixedEquals(BuiltinPcHostConfig.HelloProof(clientId), proof))
                 return;
 
             await Gate.WaitAsync(token);

@@ -53,5 +53,5 @@ jobs:
             --repo "${{ github.repository }}" `
             --target "${{ github.sha }}" `
             --title "Heart & Soul World Host ${{ github.run_number }}" `
-            --notes "Windows x64 ZeroTier/Tailscale world host. Unzip, run Start-WorldHost.bat (approve firewall UAC once). Share ROOM PIN. Phones on same ZeroTier network: Co-op → Join PC Host → PIN (host defaults to 10.137.178.161:27770). Plain TCP only — no MQTT/TURN/UPnP/relay." `
+            --notes "Windows x64 ZeroTier world host. Unzip, run Start-WorldHost.bat (approve firewall UAC once). Phones on same ZeroTier network: Co-op → Join PC Host (one tap; credentials baked into APK). Plain TCP only — no PIN/MQTT/TURN/UPnP/relay." `
             --latest=false

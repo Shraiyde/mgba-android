@@ -76,5 +76,5 @@ jobs:
           gh release create "$tag" src/platform/android/app/build/outputs/apk/debug/app-debug.apk \
             --repo "${{ github.repository }}" \
             --title "Heart & Soul Co-op Android Build ${{ github.run_number }}" \
-            --notes "Installable arm64 Android co-op APK. Co-op → Join PC Host → enter PIN. Host address defaults to 10.137.178.161:27770 over ZeroTier (remembered; advanced field editable). Load the matching patched Heart & Soul ROM separately." \
+            --notes "Installable arm64 Android co-op APK. Co-op → Join PC Host (one tap; host address/port/auth secret baked in). ZeroTier required. Load the matching patched Heart & Soul ROM separately." \
             --latest=false

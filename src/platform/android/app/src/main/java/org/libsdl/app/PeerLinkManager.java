@@ -315,12 +315,8 @@ public final class PeerLinkManager {
         if (retryEnabled || activity == null)
             return;
         SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String savedPin = prefs.getString(PREF_PIN, null);
-        if ("pc".equals(prefs.getString(PREF_ROLE, null))
-            && savedPin != null && savedPin.matches(PIN_PATTERN)) {
-            String endpoint = prefs.getString(PREF_PC_HOST_ADDR, BuiltinPcHostConfig.defaultEndpoint());
-            startPcHostJoin(savedPin, endpoint);
-        }
+        if ("pc".equals(prefs.getString(PREF_ROLE, null)))
+            startPcHostJoin();
     }
 
     public static void syncNativeConnection() {
@@ -359,11 +355,10 @@ public final class PeerLinkManager {
     private void showPairingDialogOnUi() {
         SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String savedRole = prefs.getString(PREF_ROLE, null);
-        String savedPin = prefs.getString(PREF_PIN, null);
 
         List<String> choices = new ArrayList<>();
         choices.add("Join PC Host");
-        if ("pc".equals(savedRole) && savedPin != null && savedPin.matches(PIN_PATTERN))
+        if ("pc".equals(savedRole))
             choices.add("Reconnect to PC Host");
         choices.add("Play Offline");
 
@@ -371,12 +366,9 @@ public final class PeerLinkManager {
             .setTitle("Heart & Soul Co-op")
             .setItems(choices.toArray(new String[0]), (dialog, which) -> {
                 String choice = choices.get(which);
-                if ("Join PC Host".equals(choice))
-                    showPcHostJoinDialog();
-                else if ("Reconnect to PC Host".equals(choice)) {
-                    String endpoint = prefs.getString(PREF_PC_HOST_ADDR, BuiltinPcHostConfig.defaultEndpoint());
-                    startPcHostJoin(savedPin, endpoint);
-                } else if ("Play Offline".equals(choice)) {
+                if ("Join PC Host".equals(choice) || "Reconnect to PC Host".equals(choice))
+                    startPcHostJoin();
+                else if ("Play Offline".equals(choice)) {
                     closeCurrentSession(true);
                     showStatus("Offline mode", "The co-op session has been stopped.");
                 }
@@ -506,63 +498,7 @@ public final class PeerLinkManager {
         dialog.show();
     }
 
-    private void showPcHostJoinDialog() {
-        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String rememberedEndpoint = prefs.getString(PREF_PC_HOST_ADDR, BuiltinPcHostConfig.defaultEndpoint());
-        String rememberedPin = prefs.getString(PREF_PIN, "");
-
-        float density = activity.getResources().getDisplayMetrics().density;
-        int pad = (int) (20 * density);
-
-        EditText pinInput = new EditText(activity);
-        pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(PIN_DIGITS) });
-        pinInput.setGravity(Gravity.CENTER);
-        pinInput.setTextSize(28);
-        pinInput.setHint("6-digit PIN");
-        if (rememberedPin != null && rememberedPin.matches(PIN_PATTERN))
-            pinInput.setText(rememberedPin);
-
-        TextView advancedLabel = new TextView(activity);
-        advancedLabel.setText("Advanced — PC host (ZeroTier/Tailscale)");
-        advancedLabel.setTextSize(13);
-        advancedLabel.setPadding(0, (int) (16 * density), 0, (int) (4 * density));
-
-        EditText hostInput = new EditText(activity);
-        hostInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        hostInput.setTextSize(14);
-        hostInput.setHint(BuiltinPcHostConfig.defaultEndpoint());
-        hostInput.setText(rememberedEndpoint != null && !rememberedEndpoint.isEmpty()
-            ? rememberedEndpoint : BuiltinPcHostConfig.defaultEndpoint());
-
-        LinearLayout content = new LinearLayout(activity);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(pad, pad, pad, pad);
-        content.addView(pinInput, new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        content.addView(advancedLabel);
-        content.addView(hostInput, new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        new AlertDialog.Builder(activity)
-            .setTitle("Join PC Host")
-            .setView(content)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Connect", (dialog, which) -> {
-                String entered = pinInput.getText().toString().trim();
-                String endpoint = hostInput.getText().toString().trim();
-                if (!entered.matches(PIN_PATTERN)) {
-                    showMessage("Enter all six PIN digits.");
-                    return;
-                }
-                if (endpoint.isEmpty())
-                    endpoint = BuiltinPcHostConfig.defaultEndpoint();
-                startPcHostJoin(entered, endpoint);
-            })
-            .show();
-    }
-
-    private void startPcHostJoin(String enteredPin, String endpoint) {
+    private void startPcHostJoin() {
         closeCurrentSession(false);
         Context serviceContext = appContext != null ? appContext : activity;
         if (serviceContext != null)
@@ -571,7 +507,7 @@ public final class PeerLinkManager {
         pcServerMode = true;
         pcHelloSent = false;
         retryEnabled = true;
-        pin = enteredPin;
+        pin = null;
         accepted = false;
         directConnected = false;
         nativeConnected = false;
@@ -580,8 +516,13 @@ public final class PeerLinkManager {
         lastStatusTitle = null;
         lastPcServerHeartbeatAt = 0;
 
-        if (!parsePcHostEndpoint(endpoint)) {
-            showMessage("Host address must look like 10.137.178.161:27770");
+        try {
+            pcHostAddress = BuiltinPcHostConfig.host();
+            pcHostPort = BuiltinPcHostConfig.port();
+            pinKey = BuiltinPcHostConfig.sharedSecret();
+            sessionKey = BuiltinPcHostConfig.sessionKey();
+        } catch (Exception e) {
+            showMessage("Could not start PC host link.");
             return;
         }
 
@@ -591,57 +532,17 @@ public final class PeerLinkManager {
             pcClientId = UUID.randomUUID().toString().replace("-", "");
             prefs.edit().putString("pc_client_id", pcClientId).apply();
         }
-        String normalized = pcHostAddress + ":" + pcHostPort;
         prefs.edit()
             .putString(PREF_ROLE, "pc")
-            .putString(PREF_PIN, pin)
-            .putString(PREF_PC_HOST_ADDR, normalized)
+            .remove(PREF_PIN)
             .remove(PREF_SESSION)
+            .remove(PREF_PC_HOST_ADDR)
             .apply();
 
-        showStatus("Reconnecting…", "Preparing secure link…");
-        final String joinPin = pin;
-        cryptoExecutor.execute(() -> {
-            try {
-                byte[] derived = BuiltinPcHostConfig.derivePinKey(joinPin);
-                byte[] session = BuiltinPcHostConfig.deriveSessionKey(derived);
-                handler.post(() -> {
-                    if (!joinPin.equals(pin) || !pcServerMode)
-                        return;
-                    pinKey = derived;
-                    sessionKey = session;
-                    handler.removeCallbacks(pcServerWatchdog);
-                    handler.postDelayed(pcServerWatchdog, 2000);
-                    showStatus("Reconnecting…", "Opening link to the PC host…");
-                    ensurePcTcpLink();
-                });
-            } catch (Exception e) {
-                handler.post(() -> showMessage("Could not start PC host link."));
-            }
-        });
-    }
-
-    private boolean parsePcHostEndpoint(String endpoint) {
-        if (endpoint == null)
-            return false;
-        String value = endpoint.trim();
-        if (value.isEmpty())
-            return false;
-        int colon = value.lastIndexOf(':');
-        if (colon <= 0 || colon >= value.length() - 1)
-            return false;
-        String hostPart = value.substring(0, colon).trim();
-        String portPart = value.substring(colon + 1).trim();
-        try {
-            int port = Integer.parseInt(portPart);
-            if (hostPart.isEmpty() || port < 1 || port > 65535)
-                return false;
-            pcHostAddress = hostPart;
-            pcHostPort = port;
-            return true;
-        } catch (Exception ignored) {
-            return false;
-        }
+        handler.removeCallbacks(pcServerWatchdog);
+        handler.postDelayed(pcServerWatchdog, 2000);
+        showStatus("Reconnecting…", "Opening link to the PC host…");
+        ensurePcTcpLink();
     }
 
     private void startHost(String existingPin, String existingSession) {
@@ -934,7 +835,7 @@ public final class PeerLinkManager {
         pcPeerPublicKey = null;
         if (advert.has("host"))
             pcHostAddress = advert.optString("host", null);
-        pcHostPort = advert.optInt("port", advert.optInt("lanPort", BuiltinPcHostConfig.defaultPort()));
+        pcHostPort = advert.optInt("port", advert.optInt("lanPort", BuiltinPcHostConfig.port()));
         updateNativeConnection();
         sendCounter.set(1);
         resetReceiveCounters();
@@ -947,19 +848,33 @@ public final class PeerLinkManager {
     }
 
     private void ensurePcTcpLink() {
-        if (!pcServerMode || pcClientId == null || pinKey == null || !retryEnabled)
+        if (!pcServerMode || pcClientId == null || !retryEnabled)
             return;
         if (pcHostAddress == null || pcHostAddress.isEmpty()) {
-            if (!parsePcHostEndpoint(BuiltinPcHostConfig.defaultEndpoint()))
+            try {
+                pcHostAddress = BuiltinPcHostConfig.host();
+                pcHostPort = BuiltinPcHostConfig.port();
+            } catch (Exception ignored) {
                 return;
+            }
         }
         if (pcSocket.isConnected())
             return;
         try {
-            String proof = BuiltinPcHostConfig.helloProof(pinKey, pcClientId);
+            String proof = BuiltinPcHostConfig.helloProof(pcClientId);
             String hello = "HELLO " + pcClientId + " " + proof;
             pcSocket.connect(pcHostAddress, pcHostPort, hello);
         } catch (Exception ignored) {
+            // Hidden Tailscale fallback stays disabled unless Stephen asks.
+            String fallback = BuiltinPcHostConfig.fallbackHost();
+            if (fallback != null && !fallback.equals(pcHostAddress)) {
+                pcHostAddress = fallback;
+                try {
+                    String proof = BuiltinPcHostConfig.helloProof(pcClientId);
+                    pcSocket.connect(pcHostAddress, pcHostPort, "HELLO " + pcClientId + " " + proof);
+                    return;
+                } catch (Exception ignored2) {}
+            }
             showStatus("Reconnecting…", "Waiting for the PC host…");
         }
     }
