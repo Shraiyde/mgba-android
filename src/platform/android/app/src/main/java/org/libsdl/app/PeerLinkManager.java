@@ -212,11 +212,12 @@ public final class PeerLinkManager {
         }
     };
     private final AtomicLong sendCounter = new AtomicLong(1);
-    private final long[] receiveCounters = new long[] {0, 0};
+    /** Index 0/1 = phone roles; index 2 = PC World Host (protocol v3). */
+    private final long[] receiveCounters = new long[] {0, 0, 0};
     private final List<IceCandidate> pendingCandidates = Collections.synchronizedList(new ArrayList<>());
 
     private synchronized void resetReceiveCounters() {
-        receiveCounters[0] = receiveCounters[1] = 0;
+        receiveCounters[0] = receiveCounters[1] = receiveCounters[2] = 0;
     }
 
     private volatile MqttAsyncClient mqtt;
@@ -1426,7 +1427,12 @@ public final class PeerLinkManager {
             ByteBuffer input = ByteBuffer.wrap(payload);
             int sender = input.getInt();
             long counter = input.getLong();
-            if (sender < 0 || sender > 1 || counter <= receiveCounters[sender])
+            // 0/1 = legacy phone roles; 2 = PC World Host authoritative stream.
+            if (sender < 0 || sender > 2 || counter <= receiveCounters[sender])
+                return;
+            // PC-host mode: only accept host-stamped frames (sender 2). Phones
+            // must never apply a peer's raw ciphertext (would diverge from SoT).
+            if (pcServerMode && sender != 2)
                 return;
             byte[] nonce = Arrays.copyOfRange(payload, 0, 12);
             byte[] encrypted = Arrays.copyOfRange(payload, 12, payload.length);

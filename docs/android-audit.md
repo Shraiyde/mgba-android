@@ -48,7 +48,7 @@ must re-pair with a new 6-digit PIN.
 
 | Area | Status |
 | --- | --- |
-| Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | Solid; built-in TURN default; no server prompts |
+| Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | PC World Host SoT (v3 sender 2); PIN-only; baked TURN |
 | Mailbox I/O | Replace-same-id on full ring + WORLD_RESYNC request |
 | Avatar / presence | Solid; resume re-sync; v12 follower; POSITION AbortPolicy queue (no DiscardOldest) |
 | Battle disconnect | SIO + ROM abort; no separate BATTLE_* opcodes |

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
@@ -12,10 +13,11 @@ using SIPSorcery.Net;
 namespace HeartSoulWorldHost;
 
 /// <summary>
-/// Authoritative Windows world host for Heart &amp; Soul co-op.
-/// Phones connect as clients via WebRTC data channels (Metered TURN/STUN);
-/// MQTT is signaling/pairing only. Optional LAN TCP on port 27770.
-/// Does not modify tools/HeartSoulCoopServer.
+/// Authoritative Windows world host for Heart &amp; Soul co-op — Minecraft-server model.
+/// Phones are thin clients: they send input/position/flag claims; this process is the
+/// single source of truth and streams canonical world frames back (never opaque P2P).
+/// WebRTC data channels carry claims/streams; MQTT is signaling (+ frame fallback).
+/// Optional LAN TCP on port 27770. Does not modify tools/HeartSoulCoopServer.
 /// </summary>
 internal sealed class ClientSlot
 {
@@ -26,8 +28,9 @@ internal sealed class ClientSlot
     public RTCDataChannel? DataChannel { get; set; }
     public string ConnType { get; set; } = "signaling";
     public NetworkStream? LanStream { get; set; }
-    // Last authoritative POSITION payload words (host endian), 0 if unknown.
+    // Authoritative POSITION words in network (big-endian) wire order, owned by host.
     public uint[] LastPosition { get; set; } = new uint[7];
+    public int PositionWords { get; set; }
     public bool HasPosition { get; set; }
 }
 
@@ -42,7 +45,22 @@ internal static class Program
     private const int BrokerPort = 8883;
     private const int Pbkdf2Iterations = 500_000;
     private const int LanPort = 27770;
-    private const int ProtocolVersion = 2;
+    // v3: host re-encrypts all game frames with sender id 2 (HOST_SENDER).
+    private const int ProtocolVersion = 3;
+    private const uint PeerMagic = 0x4D504C4Bu;
+    private const ushort PeerVersion = 1;
+    private const int HostSenderId = 2;
+    private const ushort MsgPosition = 16;
+    private const ushort MsgWorldFlag = 17;
+    private const ushort MsgSioMulti = 23;
+    private const ushort MsgWorldVar = 24;
+    private const ushort MsgWorldReady = 25;
+    private const ushort MsgWorldConfig = 26;
+    private const ushort MsgWorldConfigAck = 27;
+    private const ushort MsgSioResync = 28;
+    private const ushort MsgWorldConfigBlob = 29;
+    private const ushort MsgWorldResync = 30;
+    private const ushort MsgPositionResync = 31;
     private static readonly ConcurrentDictionary<string, ClientSlot> Clients = new();
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static IMqttClient? _mqtt;
@@ -51,6 +69,8 @@ internal static class Program
     private static string _salt = "";
     private static byte[] _pinKey = [];
     private static byte[] _sessionKey = [];
+    private static long _hostSendCounter = 1;
+    private static int _hostFrameSeq = 1;
     private static CancellationTokenSource _stop = new();
 
     private static async Task Main(string[] args)
@@ -80,9 +100,10 @@ internal static class Program
         Console.WriteLine("HEART & SOUL — WORLD HOST");
         Console.WriteLine("=========================");
         Console.WriteLine("ROOM PIN: " + _pin);
+        Console.WriteLine("Model: this PC hosts the world (Minecraft-style). Phones are thin clients.");
         Console.WriteLine("Keep this window open while both phones play.");
         Console.WriteLine("Phones: Co-op → Join PC Host → enter this 6-digit PIN.");
-        Console.WriteLine("Transport: WebRTC to this PC (Metered TURN/STUN). MQTT is signaling only.");
+        Console.WriteLine("Transport: WebRTC claims/stream to this PC. MQTT = signaling (+ fallback).");
         Console.WriteLine($"Optional LAN: TCP {LanPort} (same Wi-Fi / port-forward).");
         Console.WriteLine("PIN file: " + configPath);
         Console.WriteLine("Press Ctrl+C to stop. Run with --new-pin to rotate the PIN.");
@@ -106,6 +127,7 @@ internal static class Program
         _ = HeartbeatLoop(_stop.Token);
         _ = ClientWatchdog(_stop.Token);
         _ = StatusLoop(_stop.Token);
+        _ = WorldStreamLoop(_stop.Token);
 
         try { await Task.Delay(Timeout.Infinite, _stop.Token); }
         catch (OperationCanceledException) { }
@@ -477,80 +499,168 @@ internal static class Program
     }
 
     /// <summary>
-    /// Authoritative path: peek POSITION frames into host state, forward to peer
-    /// over WebRTC (preferred) or MQTT/LAN fallback. Same session key on all sides.
+    /// Minecraft-server path: decrypt phone claim → update host world → stream
+    /// host-stamped frame to the peer. Never opaque-forward client ciphertext.
     /// </summary>
-    private static async Task RouteAuthoritativeFrame(string senderId, byte[] payload, bool fromLanOrMqtt)
+    private static async Task RouteAuthoritativeFrame(string senderId, byte[] encryptedClaim, bool fromLanOrMqtt)
     {
-        if (payload.Length is < 16 or > 8192 || !Clients.TryGetValue(senderId, out var sender) || !sender.Connected)
+        _ = fromLanOrMqtt;
+        if (encryptedClaim.Length is < 16 or > 8192
+            || !Clients.TryGetValue(senderId, out var sender)
+            || !sender.Connected)
             return;
         sender.LastSeenUtc = DateTime.UtcNow;
-        TryIngestPosition(sender, payload);
+
+        if (!TryDecryptFrame(encryptedClaim, out byte[] plain) || plain.Length < 16)
+            return;
+        if (!TryParsePeerHeader(plain, out ushort type, out byte[] payload))
+            return;
 
         ClientSlot? peer = Clients.Values.FirstOrDefault(c => c.Id != senderId && c.Connected);
-        if (peer == null) return;
 
-        if (peer.DataChannel != null && peer.DataChannel.IsOpened)
+        if (type == MsgPositionResync)
+        {
+            await ForceResyncTo(senderId);
+            if (peer != null)
+                await ForceResyncTo(peer.Id);
+            return;
+        }
+
+        if (type == MsgPosition)
+        {
+            if (payload.Length < 16) return;
+            int words = Math.Min(payload.Length / 4, 7);
+            for (int i = 0; i < words; i++)
+            {
+                int o = i * 4;
+                sender.LastPosition[i] = BinaryPrimitives.ReadUInt32BigEndian(payload.AsSpan(o, 4));
+            }
+            sender.PositionWords = Math.Max(words, 4);
+            sender.HasPosition = true;
+            if (peer == null) return;
+            // Stream THIS player's host-owned position to the companion.
+            await StreamPositionTo(peer, sender);
+            return;
+        }
+
+        // Flags / vars / ready / config / SIO: host stamps and streams — phones
+        // never see each other's raw ciphertext (no divergent client copies).
+        if (peer == null) return;
+        if (type is MsgWorldFlag or MsgWorldVar or MsgWorldReady or MsgWorldConfig
+            or MsgWorldConfigAck or MsgWorldConfigBlob or MsgWorldResync
+            or MsgSioMulti or MsgSioResync)
+        {
+            await DeliverHostFrame(peer, BuildPeerFrame(type, payload));
+        }
+    }
+
+    private static async Task StreamPositionTo(ClientSlot dest, ClientSlot source)
+    {
+        if (!source.HasPosition) return;
+        int words = Math.Clamp(source.PositionWords, 4, 7);
+        byte[] payload = new byte[words * 4];
+        for (int i = 0; i < words; i++)
+            BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(i * 4, 4), source.LastPosition[i]);
+        await DeliverHostFrame(dest, BuildPeerFrame(MsgPosition, payload));
+    }
+
+    private static async Task WorldStreamLoop(CancellationToken token)
+    {
+        // Keepalive: re-stream last host-owned peer positions so phones never
+        // invent motion and never expire presence while the companion is idle.
+        while (!token.IsCancellationRequested)
         {
             try
             {
-                peer.DataChannel.send(payload);
+                await Task.Delay(TimeSpan.FromMilliseconds(200), token);
+                ClientSlot[] live = Clients.Values.Where(c => c.Connected).OrderBy(c => c.Id).ToArray();
+                if (live.Length != 2) continue;
+                if (live[0].HasPosition)
+                    await StreamPositionTo(live[1], live[0]);
+                if (live[1].HasPosition)
+                    await StreamPositionTo(live[0], live[1]);
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { Console.WriteLine("[world] " + ex.Message); }
+        }
+    }
+
+    private static bool TryParsePeerHeader(byte[] plain, out ushort type, out byte[] payload)
+    {
+        type = 0;
+        payload = Array.Empty<byte>();
+        if (plain.Length < 16) return false;
+        uint magic = BinaryPrimitives.ReadUInt32BigEndian(plain.AsSpan(0, 4));
+        ushort ver = BinaryPrimitives.ReadUInt16BigEndian(plain.AsSpan(4, 2));
+        type = BinaryPrimitives.ReadUInt16BigEndian(plain.AsSpan(6, 2));
+        uint length = BinaryPrimitives.ReadUInt32BigEndian(plain.AsSpan(8, 4));
+        if (magic != PeerMagic || ver != PeerVersion || length > 4096 || plain.Length != 16 + length)
+            return false;
+        payload = plain.AsSpan(16, (int)length).ToArray();
+        return true;
+    }
+
+    private static byte[] BuildPeerFrame(ushort type, byte[] payload)
+    {
+        byte[] frame = new byte[16 + payload.Length];
+        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), PeerMagic);
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(4, 2), PeerVersion);
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(6, 2), type);
+        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(8, 4), (uint)payload.Length);
+        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(12, 4), (uint)Interlocked.Increment(ref _hostFrameSeq));
+        if (payload.Length > 0)
+            payload.CopyTo(frame, 16);
+        return frame;
+    }
+
+    private static byte[] EncryptHostFrame(byte[] plain)
+    {
+        long counter = Interlocked.Increment(ref _hostSendCounter);
+        byte[] nonce = new byte[12];
+        BinaryPrimitives.WriteInt32BigEndian(nonce.AsSpan(0, 4), HostSenderId);
+        BinaryPrimitives.WriteInt64BigEndian(nonce.AsSpan(4, 8), counter);
+        byte[] cipher = new byte[plain.Length];
+        byte[] tag = new byte[16];
+        using var aes = new AesGcm(_sessionKey, 16);
+        aes.Encrypt(nonce, plain, cipher, tag);
+        byte[] output = new byte[12 + cipher.Length + tag.Length];
+        nonce.CopyTo(output, 0);
+        cipher.CopyTo(output, 12);
+        tag.CopyTo(output, 12 + cipher.Length);
+        return output;
+    }
+
+    private static async Task DeliverHostFrame(ClientSlot dest, byte[] plainFrame)
+    {
+        byte[] encrypted = EncryptHostFrame(plainFrame);
+        if (dest.DataChannel != null && dest.DataChannel.IsOpened)
+        {
+            try
+            {
+                dest.DataChannel.send(encrypted);
                 return;
             }
             catch { }
         }
-        if (peer.LanStream != null)
+        if (dest.LanStream != null)
         {
             try
             {
-                await SendLanFrame(peer.LanStream, payload);
+                await SendLanFrame(dest.LanStream, encrypted);
                 return;
             }
-            catch { peer.LanStream = null; }
+            catch { dest.LanStream = null; }
         }
-        if (fromLanOrMqtt || _mqtt?.IsConnected == true)
+        if (_mqtt?.IsConnected == true)
         {
             var message = new MqttApplicationMessageBuilder()
-                .WithTopic($"{RootTopic}/down/{peer.Id}/frame")
-                .WithPayload(payload)
+                .WithTopic($"{RootTopic}/down/{dest.Id}/frame")
+                .WithPayload(encrypted)
                 .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
                 .Build();
-            try { await _mqtt!.PublishAsync(message, _stop.Token); }
-            catch (Exception ex) { Console.WriteLine("[relay] " + ex.Message); }
+            try { await _mqtt.PublishAsync(message, _stop.Token); }
+            catch (Exception ex) { Console.WriteLine("[stream] " + ex.Message); }
         }
-    }
-
-    private static void TryIngestPosition(ClientSlot sender, byte[] encryptedFrame)
-    {
-        // Encrypted frames are opaque AES-GCM; host uses the shared session key
-        // to decrypt when possible so POSITION state stays authoritative.
-        try
-        {
-            if (!TryDecryptFrame(encryptedFrame, out byte[] plain))
-                return;
-            // Peer frame: magic(4) ver(2) type(2) ... — match android-peer-link
-            if (plain.Length < 8) return;
-            ushort type = (ushort)((plain[6] << 8) | plain[7]);
-            const ushort POSITION = 16;
-            const ushort POSITION_RESYNC = 31;
-            if (type == POSITION_RESYNC)
-            {
-                _ = ForceResyncTo(sender.Id);
-                return;
-            }
-            if (type != POSITION || plain.Length < 16 + 16) return;
-            int payloadOffset = 16;
-            int words = (plain.Length - payloadOffset) / 4;
-            if (words < 4) return;
-            for (int i = 0; i < Math.Min(words, 7); i++)
-            {
-                int o = payloadOffset + i * 4;
-                uint be = (uint)((plain[o] << 24) | (plain[o + 1] << 16) | (plain[o + 2] << 8) | plain[o + 3]);
-                sender.LastPosition[i] = be;
-            }
-            sender.HasPosition = true;
-        }
-        catch { }
     }
 
     private static bool TryDecryptFrame(byte[] encrypted, out byte[] plain)
@@ -576,15 +686,11 @@ internal static class Program
 
     private static async Task ForceResyncTo(string clientId)
     {
-        // Ask the phone to republish POSITION; also push peer's last known
-        // position if we have it (host-authoritative snapshot).
         await SendJson(clientId, "presence-resync", new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
         if (!Clients.TryGetValue(clientId, out var self)) return;
         ClientSlot? peer = Clients.Values.FirstOrDefault(c => c.Id != clientId && c.HasPosition);
-        if (peer == null || !peer.HasPosition) return;
-        // Phones already exchange encrypted POSITION; resync control is enough.
-        _ = peer;
-        _ = self;
+        if (peer != null)
+            await StreamPositionTo(self, peer);
     }
 
     private static async Task HandleLeave(string clientId)

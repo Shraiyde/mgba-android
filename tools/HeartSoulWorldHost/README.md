@@ -1,44 +1,44 @@
 # Heart & Soul — World Host (Windows)
 
-Authoritative co-op host for two Android phones. **Your PC** runs this app;
-both phones join with the 6-digit PIN. Phones connect to the PC over **WebRTC
-data channels** (built-in Metered TURN/STUN). MQTT is used only for
-PIN pairing / signaling. Optional LAN TCP port **27770**.
+**Minecraft-server model:** this PC is the single source of truth for the shared
+world. Phones are thin clients — they send input/position/flag claims and
+display host-streamed state. They never apply each other’s raw ciphertext.
 
-This does **not** replace or modify `tools/HeartSoulCoopServer`.
+Both phones still run the Heart & Soul ROM locally for rendering/input; partner
+avatars and shared story traffic come only from this host.
+
+MQTT is PIN signaling (+ encrypted frame fallback). Optional LAN TCP **27770**.
+Does **not** modify `tools/HeartSoulCoopServer`.
 
 ## Quick start
 
 1. Unzip the release (or build — see below).
 2. Double-click `Start-WorldHost.bat` (or run `HeartSoulWorldHost.exe`).
 3. Read the **ROOM PIN** in the console.
-4. On each phone: Co-op → **Join PC Host (PIN)** → enter the PIN.
-5. Leave the window open while you play. Status lines show each phone and
-   whether they are on WebRTC / LAN / signaling.
+4. On each phone: Co-op → **Join PC Host (PIN)** → enter the PIN (no other prompts).
+5. Leave the window open while you play.
 
 PIN is stored in `%LOCALAPPDATA%\HeartSoulWorldHost\host.json`.  
 Run with `--new-pin` to rotate it.
 
 ## What the host owns
 
-- Each player's latest map / x / y / facing / follower (from POSITION frames)
-- Ordered frame relay phone↔phone (WebRTC preferred, MQTT/LAN fallback)
+- Each player's map / x / y / facing / follower (POSITION claims → host tables)
+- Shared flags / vars / ready / config / ordered SIO (host-stamped stream)
+- ~5 Hz re-stream of last positions so presence never expires and phones never invent tiles
 - Presence resync after reconnect / field return
-- Room keepalive (does not tear down on brief mobile drops; ~90s grace)
+- Room keepalive (~90s grace on brief mobile drops)
 
-Both phones still run the Heart & Soul ROM locally for gameplay/rendering.
-Partner avatars and shared story traffic are coordinated through this host.
+Protocol **v3**: host encrypts all outbound game frames with sender id **2**.
 
 ## Network
 
-- Outbound MQTT TLS to `broker.emqx.io:8883` (signaling only)
+- Outbound MQTT TLS to `broker.emqx.io:8883` (signaling)
 - WebRTC ICE via built-in Metered STUN/TURN (no typing TURN URLs)
 - Optional: TCP `27770` for same-LAN / port-forwarded play
-
-No cloud game hosting and no paid subscription are required.
 
 ## Build (developers)
 
 ```bat
-dotnet publish tools\HeartSoulWorldHost\HeartSoulWorldHost.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish-world-host
+dotnet publish HeartSoulWorldHost.csproj -c Release -r win-x64 --self-contained true
 ```

@@ -1,19 +1,12 @@
 # Heart & Soul peer link
 
-**Primary path:** Windows **World Host** (`tools/HeartSoulWorldHost`) — see `docs/coop-world-host.md`.
-Phones: Co-op → Join PC Host (PIN). Status: `PC Host (Direct)` / `PC Host (TURN)`.
+**Primary path:** Windows **World Host** (`tools/HeartSoulWorldHost`) — Minecraft-server model; see `docs/coop-world-host.md`.
 
-# Android peer-link
+Phones: Co-op → **Join PC Host (PIN)** only. Status: `PC Host (Direct)` / `PC Host (TURN)`.
 
-The Android app supports a four-digit PIN room hosted by the Windows PC server:
+The PC owns shared world state (positions, flags, events, SIO order). Phones send claims and apply **only** host-stamped frames (AES-GCM sender id **2**, protocol v3). They never apply peer-to-peer ciphertext while in PC-host mode.
 
-1. Run `HeartSoulCoopServer.exe` on the PC. It displays the room PIN.
-2. Both phones choose **PC Server** in the co-op menu and enter that same PIN.
-3. The PC server authenticates both clients and forwards encrypted game-link frames between them.
-4. Both phones exchange ephemeral ECDH keys and use AES-GCM for end-to-end frame encryption.
-5. The PC and phones reconnect automatically after temporary network loss.
-
-The PC makes an outbound MQTT connection to the public EMQX broker; the phones use secure MQTT WebSockets to the same broker. This avoids requiring an inbound port or router port-forward. The PC server is the room coordinator and relay; both phones still run their own game.
+Legacy opaque relay: `tools/HeartSoulCoopServer` (untouched).
 
 ## Transport implementation
 

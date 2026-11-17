@@ -13,4 +13,4 @@ era). Companion ROM detail: pokehns-expansion `docs/coop-presence-movement.md`.
 | Disconnects / stuck Relay | Phone-to-phone WebRTC + MQTT dual-use; weak TURN/NAT path; no durable host authority |
 | URL / custom TURN prompts | Pairing UX asked for broker/TURN details instead of PIN-only |
 
-**Direction since:** map-0 visibility fix, step queue + AbortPolicy POSITION, reserved object slots + CB1 watchdog, field-return resync, baked Metered TURN, PIN-only UI, PC World Host as WebRTC authority.
+**Direction since:** map-0 visibility fix, step queue + AbortPolicy POSITION, reserved object slots + CB1 watchdog, field-return resync, baked Metered TURN, PIN-only UI, PC World Host as **Minecraft-style SoT** (phones claim; host streams; no peer ciphertext in PC mode).
