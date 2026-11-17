@@ -454,19 +454,29 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         }
     }
 
-    /** Ask once for all-files access so saves live in shared Documents
-     * storage and survive app reinstalls. No-ops on old Android versions
-     * and after the user has already answered. */
+    /** Ask for all-files access so saves live in shared Documents storage
+     * and survive app reinstalls. Re-prompts periodically if still denied. */
     private void requestAllFilesAccessOnce() {
+        maybeRepromptAllFilesAccess();
+    }
+
+    private void maybeRepromptAllFilesAccess() {
         if (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager())
             return;
-        if (getPreferences(MODE_PRIVATE).getBoolean("askedAllFilesAccess", false))
+        android.content.SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        long lastAsk = prefs.getLong("askedAllFilesAccessAt", 0);
+        int declines = prefs.getInt("askedAllFilesAccessDeclines", 0);
+        long now = System.currentTimeMillis();
+        // Re-ask at most every 3 days, and stop nagging after 5 declines.
+        if (lastAsk != 0 && (now - lastAsk) < 3L * 24 * 60 * 60 * 1000)
             return;
-        getPreferences(MODE_PRIVATE).edit().putBoolean("askedAllFilesAccess", true).apply();
+        if (declines >= 5)
+            return;
+        prefs.edit().putLong("askedAllFilesAccessAt", now).apply();
         runOnUiThread(() -> {
             new AlertDialog.Builder(this)
                 .setTitle("Keep saves after updates?")
-                .setMessage("Saves live inside the app and are deleted with it on reinstall. Allow \"All files access\" once so saves move to shared Documents storage and survive updates.")
+                .setMessage("Saves live inside the app and are deleted with it on reinstall. Allow \"All files access\" so saves move to shared Documents storage and survive updates.")
                 .setPositiveButton("Open Settings", (dialog, id) -> {
                     try {
                         Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
@@ -476,9 +486,23 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                         startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
                     }
                 })
-                .setNegativeButton("Later", null)
+                .setNegativeButton("Later", (dialog, id) ->
+                    prefs.edit().putInt("askedAllFilesAccessDeclines", declines + 1).apply())
                 .show();
         });
+    }
+
+    private void ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33)
+            return;
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED)
+            return;
+        android.content.SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        if (prefs.getBoolean("askedPostNotifications", false))
+            return;
+        prefs.edit().putBoolean("askedPostNotifications", true).apply();
+        requestPermissions(new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 47622);
     }
 
     /** Launch Android's system document picker and stage the selected ROM in cache. */
@@ -607,6 +631,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         if (!mHasMultiWindow) {
             resumeNativeThread();
         }
+        // Pause freezes emulation (and POSITION publishes); re-sync story/presence
+        // when returning so avatars and shared flags catch up after expiry.
+        PeerLinkManager.onActivityResumed();
+        maybeRepromptAllFilesAccess();
+        ensureNotificationPermission();
     }
 
     @Override

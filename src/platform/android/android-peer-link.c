@@ -60,6 +60,7 @@ struct mPeerLink {
 	uint8_t sioQueueWrite;
 	uint8_t sioQueueCount;
 	bool sioQueueOverflow;
+	bool pendingSioResync;
 	uint32_t sioNextSend;
 	uint32_t sioNextRecv;
 	uint32_t sioWaitGen;
@@ -156,6 +157,7 @@ static void _clearSioLocked(struct mPeerLink* link) {
 	link->sioQueueWrite = 0;
 	link->sioQueueCount = 0;
 	link->sioQueueOverflow = false;
+	link->pendingSioResync = false;
 	link->sioNextSend = 1;
 	link->sioNextRecv = 1;
 	link->sioWaitGen = 0;
@@ -194,9 +196,11 @@ static void _enqueueSioLocked(struct mPeerLink* link, uint32_t seq, uint16_t val
 			return;
 	}
 	if (link->sioQueueCount == 32) {
-		/* Keep the newer words. The waiter resyncs to the first seq still queued. */
+		/* Keep the newer words and tell the peer to jump past the dropped seq. */
 		link->sioQueueRead = (link->sioQueueRead + 1) % 32;
 		--link->sioQueueCount;
+		link->sioQueueOverflow = true;
+		link->pendingSioResync = true;
 	}
 	link->sioQueue[link->sioQueueWrite].seq = seq;
 	link->sioQueue[link->sioQueueWrite].value = value;
@@ -274,12 +278,23 @@ static void _processPayload(struct mPeerLink* link, uint16_t type, const uint8_t
 	if (type == mPEER_MSG_SIO_MULTI && size == 8) {
 		uint32_t networkSeq;
 		uint16_t networkValue;
+		bool needResync = false;
+		uint32_t jump = 0;
 		memcpy(&networkSeq, payload, sizeof(networkSeq));
 		memcpy(&networkValue, payload + 4, sizeof(networkValue));
 		pthread_mutex_lock(&link->lock);
 		_enqueueSioLocked(link, ntohl(networkSeq), ntohs(networkValue));
+		if (link->pendingSioResync) {
+			needResync = true;
+			jump = _minQueuedSeq(link);
+			link->pendingSioResync = false;
+		}
 		pthread_cond_broadcast(&link->sioCond);
 		pthread_mutex_unlock(&link->lock);
+		if (needResync && jump != 0) {
+			uint32_t networkJump = htonl(jump);
+			mPeerLinkSend(link, mPEER_MSG_SIO_RESYNC, &networkJump, sizeof(networkJump));
+		}
 		return;
 	}
 	if (type == mPEER_MSG_SIO_MULTI) {

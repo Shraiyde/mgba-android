@@ -7,10 +7,12 @@
 	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+	<!-- Required on API 33+ for the co-op keep-alive foreground notification. -->
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
 	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
 	<!-- Lets saves/savestates live in shared Documents storage so they
-	     survive app uninstalls. Requested once at startup via Settings. -->
+	     survive app uninstalls. Requested at startup via Settings. -->
 	<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
 	<application

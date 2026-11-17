@@ -360,6 +360,11 @@ static int _layout(const SDL_Rect* view, struct OverlayButton* out, SDL_Rect* st
 	}
 	if (view && sy - radius < view->y + view->h + unit / 2)
 		sy = landscape ? h - radius - 8 : view->y + view->h + unit / 2 + radius;
+	/* Always keep the stick fully on-screen even before the game view exists. */
+	if (sy - radius < unit / 2)
+		sy = radius + unit / 2;
+	if (sy + radius > h - unit / 2)
+		sy = h - radius - unit / 2;
 	stick->x = sx - radius;
 	stick->y = sy - radius;
 	stick->w = radius * 2;
@@ -414,8 +419,9 @@ static const SDL_Rect* _toggleRect(void) {
 		rect.x = rect.y = rect.w = rect.h = 0;
 		return &rect;
 	}
+	/* Bottom-right, clear of the top-right R shoulder. */
 	rect.x = w - TOGGLE_SIZE - 8;
-	rect.y = 8;
+	rect.y = h - TOGGLE_SIZE - 8;
 	rect.w = TOGGLE_SIZE;
 	rect.h = TOGGLE_SIZE;
 	return &rect;

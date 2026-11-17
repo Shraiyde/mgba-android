@@ -14,6 +14,7 @@ void mAndroidPeerJniShowDialog(void);
 void mAndroidPeerJniSyncConnection(void);
 void mAndroidPeerLinkSetConnected(bool host);
 void mAndroidPeerLinkSetDisconnected(void);
+void mAndroidPeerLinkRequestStoryResync(void);
 void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size);
 
 #endif

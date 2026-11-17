@@ -299,6 +299,20 @@ void mAndroidPeerLinkSetDisconnected(void) {
 	atomic_fetch_add(&sPeerGeneration, 1);
 }
 
+void mAndroidPeerLinkRequestStoryResync(void) {
+	/* Activity resumed after pause: force mailbox/presence re-handshake without
+	 * tearing down the transport session. */
+	sCoopLastMapSent = UINT32_MAX;
+	sCoopLastSioActive = UINT32_MAX;
+	sCoopLastXSent = UINT32_MAX;
+	sCoopLastYSent = UINT32_MAX;
+	sCoopLastGenderSent = UINT32_MAX;
+	sCoopLastFacingSent = UINT32_MAX;
+	sCoopLastConfigFrame = UINT32_MAX;
+	sCoopResyncBoostFrames = 180;
+	atomic_store(&sCoopPendingReconnectReset, true);
+}
+
 void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
 	pthread_mutex_lock(&sPeerLinkPointerLock);
 	if (sPeerLink)

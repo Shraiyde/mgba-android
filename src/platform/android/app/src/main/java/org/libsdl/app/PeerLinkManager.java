@@ -47,6 +47,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -77,21 +79,31 @@ public final class PeerLinkManager {
     private static final int MAX_MQTT_PAYLOAD_SIZE = 16 * 1024;
 
     private static volatile Activity activity;
+    private static volatile Context appContext;
     private static volatile PeerLinkManager instance;
     private static volatile boolean webRtcInitialized;
     // Native emulation/render threads must never wait on MQTT/WebRTC work.
-    // One sender thread preserves wire order. SIO link words use a deeper
-    // AbortPolicy queue so DiscardOldest never drops battle transfers under
-    // POSITION/mailbox backpressure; other frames stay coalesced/short.
+    // POSITION uses a short DiscardOldest queue (coalesce under movement).
+    // Mailbox (flags/vars/config/ready) and SIO use AbortPolicy queues so
+    // native only advances read pointers when the frame is still queued —
+    // never after a silent DiscardOldest drop.
     private static final int PEER_HDR_TYPE_OFFSET = 6;
+    private static final int MPEER_MSG_POSITION = 16;
     private static final int MPEER_MSG_SIO_MULTI = 23;
-    private static final ThreadPoolExecutor frameSender = new ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
+    private static final ThreadPoolExecutor positionSender = new ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(2),
         task -> {
-            Thread thread = new Thread(task, "HNS-Peer-Send");
+            Thread thread = new Thread(task, "HNS-Peer-Pos");
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.DiscardOldestPolicy());
+    private static final ThreadPoolExecutor mailboxSender = new ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64),
+        task -> {
+            Thread thread = new Thread(task, "HNS-Peer-Mailbox");
+            thread.setDaemon(true);
+            return thread;
+        }, new ThreadPoolExecutor.AbortPolicy());
     private static final ThreadPoolExecutor sioFrameSender = new ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64),
         task -> {
@@ -99,6 +111,11 @@ public final class PeerLinkManager {
             thread.setDaemon(true);
             return thread;
         }, new ThreadPoolExecutor.AbortPolicy());
+    private static final ExecutorService cryptoExecutor = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "HNS-Peer-Crypto");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private final SecureRandom random = new SecureRandom();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -220,6 +237,8 @@ public final class PeerLinkManager {
 
     public static synchronized void initialize(Activity value) {
         activity = value;
+        if (value != null)
+            appContext = value.getApplicationContext();
         boolean created = instance == null;
         if (created)
             instance = new PeerLinkManager();
@@ -227,6 +246,13 @@ public final class PeerLinkManager {
         PeerLinkManager manager = instance;
         if (created)
             manager.handler.post(manager::restoreSavedSession);
+    }
+
+    /** Force ROM/native story+presence re-sync after the Activity resumes. */
+    public static void onActivityResumed() {
+        PeerLinkManager manager = instance;
+        if (manager != null && manager.accepted)
+            nativeRequestStoryResync();
     }
 
     private void restoreSavedSession() {
@@ -410,7 +436,9 @@ public final class PeerLinkManager {
 
     private void startPcServerJoin(String enteredPin) {
         closeCurrentSession(false);
-        PeerLinkKeepAliveService.start(activity);
+        Context serviceContext = appContext != null ? appContext : activity;
+        if (serviceContext != null)
+            PeerLinkKeepAliveService.start(serviceContext);
         host = false;
         pcServerMode = true;
         pcHelloSent = false;
@@ -437,7 +465,9 @@ public final class PeerLinkManager {
 
     private void startHost(String existingPin, String existingSession) {
         closeCurrentSession(false);
-        PeerLinkKeepAliveService.start(activity);
+        Context serviceContext = appContext != null ? appContext : activity;
+        if (serviceContext != null)
+            PeerLinkKeepAliveService.start(serviceContext);
         host = true;
         retryEnabled = true;
         pin = existingPin != null && existingPin.matches("\\d{4}") ? existingPin : String.format("%04d", random.nextInt(10000));
@@ -448,27 +478,44 @@ public final class PeerLinkManager {
         directConnected = false;
         nativeConnected = false;
 
-        try {
-            ecdhKeyPair = createEcdhKeyPair();
-            pinKey = derivePinKey(pin, hexToBytes(salt));
-            hostPublicKey = Base64.encodeToString(ecdhKeyPair.getPublic().getEncoded(), Base64.NO_WRAP);
-            SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            prefs.edit().putString(PREF_ROLE, "host").putString(PREF_PIN, pin)
-                .putString(PREF_SESSION, sessionId).apply();
-
-            connectMqtt(() -> {
-                subscribe(toHostTopic(), relayHostTopic());
-                publishRoomAdvertisement();
-                showStatus("Your co-op PIN", pin + "\nWaiting for the other phone…");
-            });
-        } catch (Exception e) {
-            showMessage("Could not start co-op: " + e.getMessage());
-        }
+        final String hostPin = pin;
+        final String hostSession = sessionId;
+        final String hostSalt = salt;
+        showStatus("Your co-op PIN", hostPin + "\nPreparing secure room…");
+        cryptoExecutor.execute(() -> {
+            try {
+                KeyPair pair = createEcdhKeyPair();
+                byte[] derived = derivePinKey(hostPin, hexToBytes(hostSalt));
+                String pub = Base64.encodeToString(pair.getPublic().getEncoded(), Base64.NO_WRAP);
+                handler.post(() -> {
+                    if (!hostPin.equals(pin) || !hostSession.equals(sessionId))
+                        return;
+                    ecdhKeyPair = pair;
+                    pinKey = derived;
+                    hostPublicKey = pub;
+                    Context prefsContext = activity != null ? activity : appContext;
+                    if (prefsContext != null) {
+                        SharedPreferences prefs = prefsContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+                        prefs.edit().putString(PREF_ROLE, "host").putString(PREF_PIN, hostPin)
+                            .putString(PREF_SESSION, hostSession).apply();
+                    }
+                    connectMqtt(() -> {
+                        subscribe(toHostTopic(), relayHostTopic());
+                        publishRoomAdvertisement();
+                        showStatus("Your co-op PIN", hostPin + "\nWaiting for the other phone…");
+                    });
+                });
+            } catch (Exception e) {
+                handler.post(() -> showMessage("Could not start co-op: " + e.getMessage()));
+            }
+        });
     }
 
     private void startJoin(String enteredPin) {
         closeCurrentSession(false);
-        PeerLinkKeepAliveService.start(activity);
+        Context serviceContext = appContext != null ? appContext : activity;
+        if (serviceContext != null)
+            PeerLinkKeepAliveService.start(serviceContext);
         host = false;
         retryEnabled = true;
         pin = enteredPin;
@@ -1081,12 +1128,20 @@ public final class PeerLinkManager {
         }
     }
 
-    private static boolean isSioMultiFrame(byte[] frame) {
+    private static int peerFrameType(byte[] frame) {
         if (frame == null || frame.length < PEER_HDR_TYPE_OFFSET + 2)
-            return false;
-        int type = ((frame[PEER_HDR_TYPE_OFFSET] & 0xFF) << 8)
+            return -1;
+        return ((frame[PEER_HDR_TYPE_OFFSET] & 0xFF) << 8)
             | (frame[PEER_HDR_TYPE_OFFSET + 1] & 0xFF);
-        return type == MPEER_MSG_SIO_MULTI;
+    }
+
+    private static ThreadPoolExecutor senderForFrame(byte[] frame) {
+        int type = peerFrameType(frame);
+        if (type == MPEER_MSG_SIO_MULTI)
+            return sioFrameSender;
+        if (type == MPEER_MSG_POSITION)
+            return positionSender;
+        return mailboxSender;
     }
 
     public static boolean sendFrame(byte[] frame) {
@@ -1096,7 +1151,7 @@ public final class PeerLinkManager {
             return false;
         final byte[] queuedFrame = frame.clone();
         final byte[] queuedSessionKey = manager.sessionKey;
-        ThreadPoolExecutor executor = isSioMultiFrame(frame) ? sioFrameSender : frameSender;
+        ThreadPoolExecutor executor = senderForFrame(frame);
         try {
             executor.execute(() -> manager.sendFrameInternal(queuedFrame, queuedSessionKey));
             return true;
@@ -1244,9 +1299,12 @@ public final class PeerLinkManager {
     }
 
     private void initializeWebRtc() {
+        Context ctx = appContext != null ? appContext : activity;
+        if (ctx == null)
+            throw new IllegalStateException("No Android context for WebRTC");
         if (!webRtcInitialized) {
             PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(activity).createInitializationOptions());
+                PeerConnectionFactory.InitializationOptions.builder(ctx).createInitializationOptions());
             webRtcInitialized = true;
         }
         if (factory == null)
@@ -1404,6 +1462,7 @@ public final class PeerLinkManager {
     }
 
     private static native void nativeInitialize();
+    private static native void nativeRequestStoryResync();
     private native void nativePeerConnected(boolean hostRole);
     private native void nativePeerDisconnected();
     private native void nativePeerFrame(byte[] frame);
