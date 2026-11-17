@@ -262,43 +262,43 @@ public final class PeerLinkManager {
             }
             // Diag / HnsCoop log hooks stay off — Stephen does not want debug logs.
             nativeSetDiagLogs(false);
-            pcSocket.setListener(new PcHostSocket.Listener() {
+            manager.pcSocket.setListener(new PcHostSocket.Listener() {
                 @Override public void onReady(int role, int players) {
-                    host = role == 0;
+                    manager.host = role == 0;
                     try {
-                        sessionKey = BuiltinPcHostConfig.sessionKey();
+                        manager.sessionKey = BuiltinPcHostConfig.sessionKey();
                     } catch (Exception ignored) {
                         return;
                     }
-                    sendCounter.set(1);
-                    resetReceiveCounters();
-                    accepted = true;
-                    lastPcServerHeartbeatAt = System.currentTimeMillis();
-                    pcReconnectToastShown = false;
-                    reopenNativeSession();
-                    showStatus("Connected to PC host", "Linked to the PC world host.");
+                    manager.sendCounter.set(1);
+                    manager.resetReceiveCounters();
+                    manager.accepted = true;
+                    manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
+                    manager.pcReconnectToastShown = false;
+                    manager.reopenNativeSession();
+                    manager.showStatus("Connected to PC host", "Linked to the PC world host.");
                 }
                 @Override public void onConnected() {
-                    pcTcpConnected = true;
-                    lastPcServerHeartbeatAt = System.currentTimeMillis();
-                    pcReconnectToastShown = false;
-                    updateNativeConnection();
-                    if (accepted)
-                        showStatus("Connected to PC host", "Linked to the PC world host.");
+                    manager.pcTcpConnected = true;
+                    manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
+                    manager.pcReconnectToastShown = false;
+                    manager.updateNativeConnection();
+                    if (manager.accepted)
+                        manager.showStatus("Connected to PC host", "Linked to the PC world host.");
                 }
                 @Override public void onDisconnected() {
-                    pcTcpConnected = false;
+                    manager.pcTcpConnected = false;
                     // Keep accepted/sessionKey so partner sprites stay up during soft resume.
-                    updateNativeConnection();
-                    if (pcServerMode && accepted && retryEnabled)
-                        showStatus("Reconnecting…", "Waiting for the PC host…");
+                    manager.updateNativeConnection();
+                    if (manager.pcServerMode && manager.accepted && manager.retryEnabled)
+                        manager.showStatus("Reconnecting…", "Waiting for the PC host…");
                 }
                 @Override public void onFrame(byte[] encrypted) {
-                    lastPcServerHeartbeatAt = System.currentTimeMillis();
-                    handleEncryptedFrame(encrypted);
+                    manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
+                    manager.handleEncryptedFrame(encrypted);
                 }
                 @Override public void onHostBusy() {
-                    showStatus("PC host full", "Two phones are already connected.");
+                    manager.showStatus("PC host full", "Two phones are already connected.");
                 }
             });
         }
