@@ -141,6 +141,8 @@ static uint32_t sCoopLastFacingSent = UINT32_MAX;
 static uint32_t sCoopLastPosFrame = 0;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
+static uint32_t sCoopResyncBoostFrames = 0;
+static atomic_bool sCoopPendingReconnectReset = ATOMIC_VAR_INIT(false);
 static bool sCoopHostRole;
 static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
 static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
@@ -400,10 +402,19 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		}
 		core->busWrite32(core, sCoopMailboxAddress + 8, transport);
 		core->busWrite32(core, sCoopMailboxAddress + 2124, sCoopHostRole ? 1 : 0);
+		if (connected && atomic_exchange(&sCoopPendingReconnectReset, false)) {
+			core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_STORY_READY, 0);
+			core->busWrite32(core, sCoopMailboxAddress + 2100, 0);
+			core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 0);
+		}
 		if (!connected) {
 			core->busWrite32(core, sCoopMailboxAddress + 2112, 0);
 			core->busWrite32(core, sCoopMailboxAddress + 2120, 0);
 			core->busWrite32(core, sCoopMailboxAddress + 2156, 0);
+			/* Drop story-ready so a returning peer re-handshakes WORLD_READY
+			 * after the ROM requeues shared flags/vars on peerLinkReady. */
+			core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_STORY_READY, 0);
+			core->busWrite32(core, sCoopMailboxAddress + 2100, 0);
 			sCoopLastMapSent = UINT32_MAX;
 			sCoopLastSioActive = UINT32_MAX;
 			sCoopLastXSent = UINT32_MAX;
@@ -411,6 +422,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			sCoopLastGenderSent = UINT32_MAX;
 			sCoopLastFacingSent = UINT32_MAX;
 			sCoopLastPosFrame = 0;
+			sCoopResyncBoostFrames = 0;
 			core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 0);
 		}
 
@@ -463,10 +475,17 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				}
 			}
 
+			/* After reconnect / peer return, drain flag+var queues faster so
+			 * the ROM's initial re-sync catches up before play continues. */
+			unsigned flagBudget = sCoopResyncBoostFrames ? 12 : 4;
+			unsigned varBudget = sCoopResyncBoostFrames ? 12 : 4;
+			if (sCoopResyncBoostFrames)
+				--sCoopResyncBoostFrames;
+
 			uint32_t read = core->busRead32(core, sCoopMailboxAddress + 20);
 			uint32_t write = core->busRead32(core, sCoopMailboxAddress + 16);
 			unsigned sent = 0;
-			while (read != write && sent < 4) {
+			while (read != write && sent < flagBudget) {
 				uint32_t packed = core->busRead32(core, sCoopMailboxAddress + 32 + (read % HNS_COOP_FLAG_QUEUE_SIZE) * 4);
 				uint32_t networkPacked = htonl(packed);
 				if (!mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_FLAG, &networkPacked, sizeof(networkPacked)))
@@ -479,7 +498,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			uint32_t varRead = core->busRead32(core, sCoopMailboxAddress + 1060);
 			uint32_t varWrite = core->busRead32(core, sCoopMailboxAddress + 1056);
 			unsigned varsSent = 0;
-			while (varRead != varWrite && varsSent < 4) {
+			while (varRead != varWrite && varsSent < varBudget) {
 				uint32_t packed = core->busRead32(core, sCoopMailboxAddress + 1072 + (varRead % HNS_COOP_VAR_QUEUE_SIZE) * 4);
 				uint32_t networkPacked = htonl(packed);
 				if (!mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_VAR, &networkPacked, sizeof(networkPacked)))
@@ -525,6 +544,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
                 }
 				if (peerEvent.messageType == mPEER_MSG_POSITION && peerEvent.size >= 4 * sizeof(uint32_t)) {
 					uint32_t networkState[6] = { 0, 0, 0, 0, 0, 0 };
+					uint32_t wasPresent = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY);
 					memcpy(networkState, peerEvent.data, peerEvent.size > sizeof(networkState) ? sizeof(networkState) : peerEvent.size);
 					core->busWrite32(core, sCoopMailboxAddress + 2108, ntohl(networkState[0]));
 					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);
@@ -537,6 +557,20 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					}
 					core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 1);
 					sCoopLastPosFrame = frame;
+					/* Peer returned after absence: force an immediate local
+					 * POSITION publish and boost mailbox drain so ROM re-sync
+					 * (rising peerLinkReady) and avatar coords catch up fast. */
+					if (!wasPresent) {
+						sCoopLastMapSent = UINT32_MAX;
+						sCoopLastSioActive = UINT32_MAX;
+						sCoopLastXSent = UINT32_MAX;
+						sCoopLastYSent = UINT32_MAX;
+						sCoopLastGenderSent = UINT32_MAX;
+						sCoopLastFacingSent = UINT32_MAX;
+						sCoopLastConfigFrame = UINT32_MAX;
+						sCoopResyncBoostFrames = 180;
+						core->busWrite32(core, sCoopMailboxAddress + 2100, 0);
+					}
 					continue;
 				}
 				if (peerEvent.messageType == mPEER_MSG_POSITION && peerEvent.size == 2 * sizeof(uint32_t)) {
@@ -557,6 +591,15 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					uint32_t incomingRead = core->busRead32(core, sCoopMailboxAddress + 28);
 					if (incomingWrite - incomingRead >= HNS_COOP_FLAG_QUEUE_SIZE)
 						continue;
+					/* Skip exact duplicate of the newest queued entry so
+					 * reconnect re-broadcasts do not fill the ring. ROM still
+					 * applies grants only when FlagSet flips unset→set. */
+					if (incomingWrite != incomingRead) {
+						uint32_t prev = core->busRead32(core,
+							sCoopMailboxAddress + 544 + ((incomingWrite - 1) % HNS_COOP_FLAG_QUEUE_SIZE) * 4);
+						if (prev == packed)
+							continue;
+					}
 					core->busWrite32(core, sCoopMailboxAddress + 544 + (incomingWrite % HNS_COOP_FLAG_QUEUE_SIZE) * 4, packed);
 					core->busWrite32(core, sCoopMailboxAddress + 24, incomingWrite + 1);
 				} else if (peerEvent.messageType == mPEER_MSG_WORLD_VAR) {
@@ -564,6 +607,12 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					uint32_t incomingRead = core->busRead32(core, sCoopMailboxAddress + 1068);
 					if (incomingWrite - incomingRead >= HNS_COOP_VAR_QUEUE_SIZE)
 						continue;
+					if (incomingWrite != incomingRead) {
+						uint32_t prev = core->busRead32(core,
+							sCoopMailboxAddress + 1584 + ((incomingWrite - 1) % HNS_COOP_VAR_QUEUE_SIZE) * 4);
+						if (prev == packed)
+							continue;
+					}
 					core->busWrite32(core, sCoopMailboxAddress + 1584 + (incomingWrite % HNS_COOP_VAR_QUEUE_SIZE) * 4, packed);
 					core->busWrite32(core, sCoopMailboxAddress + 1064, incomingWrite + 1);
 				} else if (peerEvent.messageType == mPEER_MSG_WORLD_READY && packed != 0) {
@@ -579,8 +628,12 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			 * during a local map load (localSio clear) — the peer is often
 			 * quiet for the same window, and dropping presence there is what
 			 * made the avatar vanish after leaving the starting house. */
-			if (localSioActive && sCoopLastPosFrame != 0 && frame - sCoopLastPosFrame > 180)
-				core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 0);
+			if (localSioActive && sCoopLastPosFrame != 0 && frame - sCoopLastPosFrame > 180) {
+				if (core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY)) {
+					core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 0);
+					core->busWrite32(core, sCoopMailboxAddress + 2100, 0);
+				}
+			}
 		}
 	}
 }
@@ -615,6 +668,7 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 	sCoopLastPosFrame = 0;
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopLastConfigSequence = UINT32_MAX;
+	sCoopResyncBoostFrames = connected ? 180 : 0;
 	sCoopHostRole = connected && host;
 	if (sPeerLink) {
 		mPeerLinkSetHostRole(sPeerLink, host);
@@ -623,6 +677,10 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 	if (sLinkCable)
 		mAndroidLinkCableSetRole(sLinkCable, connected && host);
 	sPeerSessionOpen = connected;
+	/* Core thread clears story-ready / presence on the next mailbox tick so
+	 * the ROM sees peerLinkReady rise again and requeues shared state. */
+	if (connected)
+		atomic_store(&sCoopPendingReconnectReset, true);
 }
 
 static bool mSDLAndroidSWInit(struct mSDLRenderer* renderer) {
