@@ -222,6 +222,12 @@ JNIEXPORT void JNICALL Java_org_libsdl_app_PeerLinkManager_nativeRequestStoryRes
     mAndroidPeerLinkRequestStoryResync();
 }
 
+JNIEXPORT void JNICALL Java_org_libsdl_app_PeerLinkManager_nativeSetDiagLogs(JNIEnv* env, jclass cls, jboolean enabled) {
+    (void) env;
+    (void) cls;
+    mAndroidPeerLinkSetDiagLogs(enabled == JNI_TRUE);
+}
+
 JNIEXPORT void JNICALL Java_org_libsdl_app_PeerLinkManager_nativePeerFrame(JNIEnv* env, jobject instance, jbyteArray frame) {
     (void) instance;
     if (!frame)

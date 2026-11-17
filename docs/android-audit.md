@@ -11,73 +11,84 @@ Companion ROM classification: [`pokehns-expansion` `docs/coop-flag-audit.md`](ht
 
 ## 1. Summary
 
-The Android stack is **feature-complete for two-phone co-op**: PIN pairing,
-WebRTC Direct + MQTT relay, AES-GCM frames, mailbox v11 (position / flags /
-vars / config / ready), SIO link cable, Documents saves, portrait+landscape
-touch overlay, and audio/frame pacing ownership off audio sync.
+The Android stack is **feature-complete for two-phone co-op**: 6-digit PIN
+pairing, WebRTC Direct + MQTT relay, optional user TURN, AES-GCM frames,
+mailbox v11 (position / flags / vars / config / ready / resync), SIO link
+cable, Documents saves, portrait+landscape touch overlay, and audio/frame
+pacing ownership off audio sync.
 
-This pass fixed the highest-impact reliability and lifecycle gaps found in
-audit. Remaining items are infrastructure (TURN), optional polish, or
-intentionally deferred protocol stubs.
+Remaining: optional TURN **infra** (user must supply a TURN URI; none is
+bundled), and very low-priority polish.
 
 ---
 
-## 2. Areas reviewed
+## 2. Protocol compatibility (ROM ↔ APK)
+
+| Constant | Value | Both sides |
+| --- | --- | --- |
+| `HNS_COOP_MAILBOX_MAGIC` | `0x504F4F43` | ROM + Android |
+| `HNS_COOP_MAILBOX_VERSION` | **11** | ROM + Android |
+| `HNS_COOP_MAILBOX_SIZE` | 2284 | ROM + Android |
+| Flag / var queues | 128 / 128 | ROM + Android |
+| Peer frame `PEER_VERSION` | 1 | Android peer link |
+| Wire message IDs | POSITION=16 … WORLD_RESYNC=30 | Android; ROM via mailbox words |
+
+ROM build **hns-coop-125+** and APK builds from this audit closeout share
+mailbox **v11**. PIN length is an Android MQTT/WebRTC pairing concern only
+(not in the GBA mailbox). Old 4-digit saved sessions must re-pair with a new
+6-digit PIN.
+
+---
+
+## 3. Areas reviewed
 
 | Area | Status |
 | --- | --- |
-| Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | Solid; Direct STUN-only (no TURN) |
-| Mailbox I/O (flag/var/position/config/SIO) | Fixed send-queue split; SIO_RESYNC now sent on overflow |
-| Avatar / presence across maps | Solid; resume forces story/presence re-sync |
-| Battle disconnect (emulator side) | SIO `0xFFFF` + presence clear; ROM owns clean abort |
-| Saves outside the app | Documents path + re-prompt if still denied |
-| Touch controls / layout | Stick clamp + hide-toggle moved off R |
-| Audio / frame pacing | Intentional; diagnostics still verbose |
-| Settings / UI flows | LINK dialog + SAF ROM picker |
-| Crash / lifecycle / threading | WebRTC uses Application context; FGS notification permission |
+| Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | Solid; optional TURN field (default off) |
+| Mailbox I/O | Replace-same-id on full ring + WORLD_RESYNC request |
+| Avatar / presence | Solid; resume re-sync |
+| Battle disconnect | SIO + ROM abort; no separate BATTLE_* opcodes |
+| Saves outside the app | Documents + periodic re-prompt |
+| Touch controls | Stick clamp + hide-toggle off R |
+| Audio / frame pacing | Intentional |
+| Diagnostic logs | Gated behind LINK → Debug logs toggle |
 | Permissions | INTERNET, FGS, MANAGE_EXTERNAL_STORAGE, POST_NOTIFICATIONS |
-| Project TODO/FIXME | None material in HnS-owned files |
 
 ---
 
-## 3. Fixed this pass
+## 4. Fixed (this closeout + prior harden pass)
 
 | Pri | Issue | Fix |
 | --- | --- | --- |
-| P0 | POSITION/mailbox shared `DiscardOldest` queue could drop already-“sent” flags/vars | Separate `positionSender` (DiscardOldest×2), `mailboxSender` (AbortPolicy×64), existing SIO AbortPolicy |
-| P0 | WebRTC init NPE after `detachActivity()` | `appContext` Application context for `PeerConnectionFactory` |
-| P1 | Pause froze emulation → peer presence expired with no recovery on resume | `PeerLinkManager.onActivityResumed()` → `nativeRequestStoryResync()` clears presence/story-ready and boosts drain |
-| P1 | Missing `POST_NOTIFICATIONS` (API 33+) for FGS | Manifest + one-shot runtime request |
-| P1 | `mPEER_MSG_SIO_RESYNC` receive-only | On SIO queue overflow, send resync jump to min remaining seq; set `sioQueueOverflow` |
-| P1 | PBKDF2 500k on UI thread when hosting | Derive PIN key / ECDH on `cryptoExecutor` |
-| P1 | Saves “Later” never re-prompted | Re-ask every 3 days (max 5 declines) until all-files access granted |
-| P1 | FGS start with null Activity | Prefer `appContext` for `PeerLinkKeepAliveService.start` |
-| P2 | Hide-controls toggle overlapped top-right **R** | Move toggle to bottom-right |
-| P2 | Portrait stick unclamped when game view null | Always clamp stick inside window |
-
-Also kept from prior reconnect work: story-ready clear on session reopen, peer-return POSITION boost, duplicate mailbox entry skip, Direct auto-retry.
+| P0 | Shared DiscardOldest could drop flags/vars | Separate POSITION / mailbox / SIO senders |
+| P0 | WebRTC NPE after Activity detach | Application context |
+| P1 | Pause → presence expiry | Resume story/presence re-sync |
+| P1 | Missing POST_NOTIFICATIONS | Manifest + runtime ask |
+| P1 | SIO_RESYNC receive-only | Send on queue overflow |
+| P1 | Inbound mailbox ring-full silent drop | Replace same flag/var id in ring; else `WORLD_RESYNC` + local requeue |
+| P1 | 4-digit PIN entropy | **6-digit** PIN + selectable host PIN dialog |
+| P1 | No TURN path | Optional TURN URI/user/pass prefs (default empty = STUN only) |
+| P1 | Verbose diagnostic spam | `PREF_DIAG_LOGS` + `nativeSetDiagLogs` |
+| P2 | Unused BATTLE_*/CHAT opcodes | Removed from enum; 18–22 reserved; `WORLD_RESYNC=30` |
+| P2 | Hide-toggle vs R / stick clamp | Prior pass |
 
 ---
 
-## 4. Remaining
+## 5. Remaining
 
 | Pri | Issue | Notes |
 | --- | --- | --- |
-| P1 | No TURN servers | Many cellular NATs stay on MQTT QoS 0 relay; needs infra, not code-only |
-| P1 | Incoming flag/var ring full still drops | Mitigated by AbortPolicy backpressure on send + reconnect requeue; optional NACK later |
-| P2 | Unused opcodes `BATTLE_*` / `KEEPALIVE` / `CHAT` | ROM battle abort is mailbox/SIO based; stubs intentional |
-| P2 | Debug overlay draw is no-op but diagnostics still logged | Gate behind build flag if log noise matters |
-| P2 | Public EMQX + 4-digit PIN entropy | Mitigated by PBKDF2; longer codes need product change |
-| P2 | `threadedVideo` forced off | Documented diagnostic choice |
+| P1 | TURN **infrastructure** | App accepts a user-supplied `turn:` URI. Free public STUN is built in. A working TURN still needs a host you control (e.g. coturn) or a free-tier TURN provider account — **not** bundled or paid-for here. |
+| P2 | Public EMQX broker | Shared public broker; 6-digit PIN + PBKDF2 mitigate; private broker would be stronger |
+| P2 | `threadedVideo` forced off | Intentional diagnostic choice |
 | — | Upstream SDL TODOs | Ignored |
 
 ---
 
-## 5. What already looked solid (unchanged)
+## 6. What already looked solid
 
-- E2E crypto (PBKDF2 → ECDH → AES-GCM, nonce domains, key rotate hygiene)
+- E2E crypto (PBKDF2 → ECDH → AES-GCM)
 - SIO hold/retransmit without fabricating `0xFFFF` while connected
-- Presence sticky across local map loads (`localSioActive` gate)
-- Frame pacing at 59.7275 Hz with EGL swap interval 0 / audioSync off
-- SAF ROM import; `configChanges` + `fullSensor` avoids rotation teardown
-- Keep-alive FGS while co-op session is active
+- Presence sticky across local map loads
+- Frame pacing at 59.7275 Hz / audioSync off
+- SAF ROM import; Keep-alive FGS

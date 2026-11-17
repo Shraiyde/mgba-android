@@ -73,6 +73,12 @@ public final class PeerLinkManager {
     private static final String PREF_ROLE = "role";
     private static final String PREF_PIN = "pin";
     private static final String PREF_SESSION = "session";
+    private static final String PREF_TURN_URI = "turn_uri";
+    private static final String PREF_TURN_USER = "turn_user";
+    private static final String PREF_TURN_PASS = "turn_pass";
+    private static final String PREF_DIAG_LOGS = "diag_logs";
+    private static final int PIN_DIGITS = 6;
+    private static final String PIN_PATTERN = "\\d{6}";
     private static final int PBKDF2_ITERATIONS = 500000;
     private static final int MAX_PEER_FRAME_SIZE = 16 + 4096;
     private static final int MAX_ENCRYPTED_FRAME_SIZE = 12 + MAX_PEER_FRAME_SIZE + 16;
@@ -244,6 +250,10 @@ public final class PeerLinkManager {
             instance = new PeerLinkManager();
         nativeInitialize();
         PeerLinkManager manager = instance;
+        if (value != null) {
+            SharedPreferences prefs = value.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            nativeSetDiagLogs(prefs.getBoolean(PREF_DIAG_LOGS, false));
+        }
         if (created)
             manager.handler.post(manager::restoreSavedSession);
     }
@@ -262,7 +272,7 @@ public final class PeerLinkManager {
         String savedRole = prefs.getString(PREF_ROLE, null);
         String savedPin = prefs.getString(PREF_PIN, null);
         String savedSession = prefs.getString(PREF_SESSION, null);
-        if (savedPin == null || !savedPin.matches("\\d{4}"))
+        if (savedPin == null || !savedPin.matches(PIN_PATTERN))
             return;
         if ("host".equals(savedRole))
             startHost(savedPin, savedSession);
@@ -316,6 +326,9 @@ public final class PeerLinkManager {
             choices.add("Reconnect as Host");
         else if ("join".equals(savedRole) && savedPin != null)
             choices.add("Reconnect");
+        choices.add("Optional TURN server…");
+        boolean diagOn = prefs.getBoolean(PREF_DIAG_LOGS, false);
+        choices.add(diagOn ? "Debug logs: ON" : "Debug logs: OFF");
         choices.add("Play Offline");
 
         new AlertDialog.Builder(activity)
@@ -332,12 +345,79 @@ public final class PeerLinkManager {
                     startHost(savedPin, savedSession);
                 else if ("Reconnect".equals(choice))
                     startJoin(savedPin);
-                else if ("Play Offline".equals(choice)) {
+                else if ("Optional TURN server…".equals(choice))
+                    showTurnServerDialog();
+                else if (choice.startsWith("Debug logs:")) {
+                    boolean next = !diagOn;
+                    prefs.edit().putBoolean(PREF_DIAG_LOGS, next).apply();
+                    nativeSetDiagLogs(next);
+                    showStatus("Debug logs", next ? "Verbose GBA diagnostics enabled." : "Verbose diagnostics off.");
+                } else if ("Play Offline".equals(choice)) {
                     closeCurrentSession(true);
                     showStatus("Offline mode", "The co-op session has been stopped.");
                 }
             })
             .show();
+    }
+
+    private void showTurnServerDialog() {
+        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        EditText uriInput = new EditText(activity);
+        uriInput.setHint("turn:host:3478 (leave blank to disable)");
+        uriInput.setText(prefs.getString(PREF_TURN_URI, ""));
+        EditText userInput = new EditText(activity);
+        userInput.setHint("username (optional)");
+        userInput.setText(prefs.getString(PREF_TURN_USER, ""));
+        EditText passInput = new EditText(activity);
+        passInput.setHint("credential (optional)");
+        passInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        passInput.setText(prefs.getString(PREF_TURN_PASS, ""));
+        LinearLayout content = new LinearLayout(activity);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int padding = (int) (20 * activity.getResources().getDisplayMetrics().density);
+        content.setPadding(padding, padding, padding, padding);
+        content.addView(uriInput);
+        content.addView(userInput);
+        content.addView(passInput);
+        new AlertDialog.Builder(activity)
+            .setTitle("Optional TURN server")
+            .setMessage("Default is free public STUN only. Add your own TURN URI if Direct fails behind strict NATs. Leave blank to disable. No paid service is bundled.")
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save", (d, w) -> {
+                prefs.edit()
+                    .putString(PREF_TURN_URI, uriInput.getText().toString().trim())
+                    .putString(PREF_TURN_USER, userInput.getText().toString().trim())
+                    .putString(PREF_TURN_PASS, passInput.getText().toString())
+                    .apply();
+                showStatus("TURN", uriInput.getText().toString().trim().isEmpty()
+                    ? "Custom TURN cleared — STUN only."
+                    : "Custom TURN saved for the next Direct attempt.");
+            })
+            .show();
+    }
+
+    private List<PeerConnection.IceServer> buildIceServers() {
+        List<PeerConnection.IceServer> servers = new ArrayList<>();
+        servers.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
+        servers.add(PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer());
+        servers.add(PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer());
+        Context prefsContext = activity != null ? activity : appContext;
+        if (prefsContext == null)
+            return servers;
+        SharedPreferences prefs = prefsContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String turnUri = prefs.getString(PREF_TURN_URI, "");
+        if (turnUri == null || turnUri.trim().isEmpty())
+            return servers;
+        String user = prefs.getString(PREF_TURN_USER, "");
+        String pass = prefs.getString(PREF_TURN_PASS, "");
+        PeerConnection.IceServer.Builder turn = PeerConnection.IceServer.builder(turnUri.trim());
+        if (user != null && !user.isEmpty())
+            turn.setUsername(user);
+        if (pass != null && !pass.isEmpty())
+            turn.setPassword(pass);
+        servers.add(turn.createIceServer());
+        return servers;
     }
 
     private void showJoinPinDialog() {
@@ -348,7 +428,7 @@ public final class PeerLinkManager {
 
         // Both phones advertise a temporary host code. Comparing the two codes
         // deterministically elects one host and one joiner after they exchange them.
-        if (!"host".equals(savedRole) || savedPin == null || !savedPin.matches("\\d{4}")) {
+        if (!"host".equals(savedRole) || savedPin == null || !savedPin.matches(PIN_PATTERN)) {
             startHost(null, null);
         } else if (!host || !retryEnabled) {
             startHost(savedPin, savedSession);
@@ -356,7 +436,7 @@ public final class PeerLinkManager {
 
         EditText pinInput = new EditText(activity);
         pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(4) });
+        pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(PIN_DIGITS) });
         pinInput.setGravity(Gravity.CENTER);
         pinInput.setTextSize(28);
         pinInput.setHint("Enter companion code");
@@ -390,8 +470,8 @@ public final class PeerLinkManager {
             .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             String entered = pinInput.getText().toString().trim();
-            if (!entered.matches("\\d{4}")) {
-                showMessage("Enter all four digits.");
+            if (!entered.matches(PIN_PATTERN)) {
+                showMessage("Enter all six digits.");
                 return;
             }
             if (entered.equals(pin)) {
@@ -416,7 +496,7 @@ public final class PeerLinkManager {
     private void showPcServerPinDialog() {
         EditText pinInput = new EditText(activity);
         pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(4) });
+        pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(PIN_DIGITS) });
         pinInput.setGravity(Gravity.CENTER);
         pinInput.setTextSize(28);
 
@@ -426,10 +506,10 @@ public final class PeerLinkManager {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Connect", (dialog, which) -> {
                 String entered = pinInput.getText().toString().trim();
-                if (entered.matches("\\d{4}"))
+                if (entered.matches(PIN_PATTERN))
                     startPcServerJoin(entered);
                 else
-                    showMessage("Enter all four digits.");
+                    showMessage("Enter all six digits.");
             })
             .show();
     }
@@ -470,7 +550,7 @@ public final class PeerLinkManager {
             PeerLinkKeepAliveService.start(serviceContext);
         host = true;
         retryEnabled = true;
-        pin = existingPin != null && existingPin.matches("\\d{4}") ? existingPin : String.format("%04d", random.nextInt(10000));
+        pin = existingPin != null && existingPin.matches(PIN_PATTERN) ? existingPin : String.format("%0" + PIN_DIGITS + "d", random.nextInt((int) Math.pow(10, PIN_DIGITS)));
         sessionId = existingSession != null ? existingSession : randomHex(16);
         salt = randomHex(16);
         accepted = false;
@@ -503,11 +583,33 @@ public final class PeerLinkManager {
                         subscribe(toHostTopic(), relayHostTopic());
                         publishRoomAdvertisement();
                         showStatus("Your co-op PIN", hostPin + "\nWaiting for the other phone…");
+                        showHostPinDialog(hostPin);
                     });
                 });
             } catch (Exception e) {
                 handler.post(() -> showMessage("Could not start co-op: " + e.getMessage()));
             }
+        });
+    }
+
+    private void showHostPinDialog(String hostPin) {
+        Activity current = activity;
+        if (current == null || hostPin == null)
+            return;
+        current.runOnUiThread(() -> {
+            TextView value = new TextView(current);
+            value.setText(hostPin);
+            value.setTextSize(34);
+            value.setGravity(Gravity.CENTER);
+            value.setTextIsSelectable(true);
+            int padding = (int) (24 * current.getResources().getDisplayMetrics().density);
+            value.setPadding(padding, padding, padding, padding);
+            new AlertDialog.Builder(current)
+                .setTitle("Your 6-digit co-op PIN")
+                .setMessage("Share this PIN with the other phone. It stays selectable so you can copy it.")
+                .setView(value)
+                .setPositiveButton("OK", null)
+                .show();
         });
     }
 
@@ -841,7 +943,7 @@ public final class PeerLinkManager {
         byte[] derivedPinKey = derivePinKey(pin, hexToBytes(incomingSalt));
         String expected = hmacText(derivedPinKey, incomingSession + "|" + incomingPublicKey);
         if (!constantTimeEquals(expected, advert.getString("proof"))) {
-            showStatus("PIN not accepted", "The room could not be authenticated. Check the four digits.");
+            showStatus("PIN not accepted", "The room could not be authenticated. Check the six-digit PIN.");
             return;
         }
 
@@ -964,11 +1066,7 @@ public final class PeerLinkManager {
     private void createPeerConnection(boolean offerer) {
         try {
             initializeWebRtc();
-            List<PeerConnection.IceServer> iceServers = Arrays.asList(
-                PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-                PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-                PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer()
-            );
+            List<PeerConnection.IceServer> iceServers = buildIceServers();
             PeerConnection.RTCConfiguration config = new PeerConnection.RTCConfiguration(iceServers);
             config.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
             peerConnection = factory.createPeerConnection(config, new PeerConnection.Observer() {
@@ -1464,6 +1562,7 @@ public final class PeerLinkManager {
 
     private static native void nativeInitialize();
     private static native void nativeRequestStoryResync();
+    private static native void nativeSetDiagLogs(boolean enabled);
     private native void nativePeerConnected(boolean hostRole);
     private native void nativePeerDisconnected();
     private native void nativePeerFrame(byte[] frame);

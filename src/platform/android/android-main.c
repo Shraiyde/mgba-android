@@ -143,6 +143,8 @@ static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
 static uint32_t sCoopResyncBoostFrames = 0;
 static atomic_bool sCoopPendingReconnectReset = ATOMIC_VAR_INIT(false);
+static atomic_bool sCoopDiagLogs = ATOMIC_VAR_INIT(false);
+static uint32_t sCoopLastResyncRequestFrame = 0;
 static bool sCoopHostRole;
 static atomic_int sPendingPeerState = ATOMIC_VAR_INIT(-1);
 static atomic_bool sPendingPeerHostRole = ATOMIC_VAR_INIT(false);
@@ -251,13 +253,15 @@ static void mSDLAndroidUpdateDebugOverlay(struct mSDLRenderer* renderer, unsigne
 		snprintf(videoStatus, sizeof(videoStatus), "%s W%.1f U%.1f X%.1f P%.1f C%.1f A%.1f VW%.1f R%.1f CPU%.1f VS=%s TV=%d VC=%d Q=%d",
 			rendererName ? rendererName : "unknown", waitMs, uploadMs, drawMs, presentMs, coopMs, audioWaitMs, videoPostWaitMs,
 			videoRunWallMs, videoRunCpuMs, vsyncStatus, renderer->core->videoLogger != NULL, gba->video.vcount, haveSyncSnapshot ? pending : -1);
-		SDL_Log("GBA diagnostic: fpsCore=%.2f fpsDraw=%.2f waitMs=%.3f uploadMs=%.3f presentMs=%.3f coopMs=%.3f renderer=%s pc=%08X cycles=%d nextEvent=%d halted=%d vcount=%d frames=%u event=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
-			coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs, rendererName ? rendererName : "unknown",
-			cpu->gprs[ARM_PC], cpu->cycles, cpu->nextEvent, cpu->halted, gba->video.vcount,
-			gba->video.frameCounter, gba->video.event.callback ? "scheduled" : "missing",
-			gba->video.event.when, (void*) gba->timing.root, gba->cpuBlocked,
-			(void*) gba->memory.rom, gba->memory.romSize, gba->memory.fullBios,
-			haveSyncSnapshot ? pending : -1, videoWait, postCount, startCount, acceptedCount, endCount);
+		if (atomic_load(&sCoopDiagLogs)) {
+			SDL_Log("GBA diagnostic: fpsCore=%.2f fpsDraw=%.2f waitMs=%.3f uploadMs=%.3f presentMs=%.3f coopMs=%.3f renderer=%s pc=%08X cycles=%d nextEvent=%d halted=%d vcount=%d frames=%u event=%s@%u timingRoot=%p cpuBlocked=%d rom=%p romSize=%zu BIOS=%d syncPending=%d syncWait=%d post=%u start=%u accepted=%u end=%u",
+				coreFps, drawFps, waitMs, uploadMs, presentMs, coopMs, rendererName ? rendererName : "unknown",
+				cpu->gprs[ARM_PC], cpu->cycles, cpu->nextEvent, cpu->halted, gba->video.vcount,
+				gba->video.frameCounter, gba->video.event.callback ? "scheduled" : "missing",
+				gba->video.event.when, (void*) gba->timing.root, gba->cpuBlocked,
+				(void*) gba->memory.rom, gba->memory.romSize, gba->memory.fullBios,
+				haveSyncSnapshot ? pending : -1, videoWait, postCount, startCount, acceptedCount, endCount);
+		}
 	} else {
 		snprintf(videoStatus, sizeof(videoStatus), "VIDEO: BUFFER %s | SDL %s",
 			renderer && renderer->videoBufferAttached ? "ATTACHED" : "MISSING",
@@ -311,6 +315,56 @@ void mAndroidPeerLinkRequestStoryResync(void) {
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopResyncBoostFrames = 180;
 	atomic_store(&sCoopPendingReconnectReset, true);
+}
+
+void mAndroidPeerLinkSetDiagLogs(bool enabled) {
+	atomic_store(&sCoopDiagLogs, enabled);
+}
+
+static void mSDLAndroidRequestPeerStoryResync(struct mCore* core, uint32_t frame) {
+	uint32_t one = htonl(1);
+	if (frame - sCoopLastResyncRequestFrame < 120)
+		return;
+	sCoopLastResyncRequestFrame = frame;
+	mPeerLinkSend(sPeerLink, mPEER_MSG_WORLD_RESYNC, &one, sizeof(one));
+	mAndroidPeerLinkRequestStoryResync();
+	(void) core;
+}
+
+/* Enqueue a packed flag/var. On a full ring, replace an older entry with the
+ * same id (low 16 bits). If none, request a peer story re-sync instead of
+ * silently dropping the update. */
+static bool mSDLAndroidEnqueueMailboxWord(struct mCore* core, uint32_t baseOff, uint32_t writeOff,
+	uint32_t readOff, uint32_t queueSize, uint32_t packed, uint32_t frame) {
+	uint32_t incomingWrite = core->busRead32(core, sCoopMailboxAddress + writeOff);
+	uint32_t incomingRead = core->busRead32(core, sCoopMailboxAddress + readOff);
+	uint16_t id = packed & 0xFFFF;
+	uint32_t depth = incomingWrite - incomingRead;
+	uint32_t i;
+
+	if (depth < queueSize) {
+		if (depth != 0) {
+			uint32_t prev = core->busRead32(core,
+				sCoopMailboxAddress + baseOff + ((incomingWrite - 1) % queueSize) * 4);
+			if (prev == packed)
+				return true;
+		}
+		core->busWrite32(core, sCoopMailboxAddress + baseOff + (incomingWrite % queueSize) * 4, packed);
+		core->busWrite32(core, sCoopMailboxAddress + writeOff, incomingWrite + 1);
+		return true;
+	}
+
+	for (i = incomingRead; i != incomingWrite; ++i) {
+		uint32_t slot = i % queueSize;
+		uint32_t existing = core->busRead32(core, sCoopMailboxAddress + baseOff + slot * 4);
+		if ((existing & 0xFFFF) == id) {
+			core->busWrite32(core, sCoopMailboxAddress + baseOff + slot * 4, packed);
+			return true;
+		}
+	}
+
+	mSDLAndroidRequestPeerStoryResync(core, frame);
+	return false;
 }
 
 void mAndroidPeerLinkReceiveFrame(const uint8_t* frame, size_t size) {
@@ -601,36 +655,13 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				memcpy(&networkPacked, peerEvent.data, sizeof(networkPacked));
 				uint32_t packed = ntohl(networkPacked);
 				if (peerEvent.messageType == mPEER_MSG_WORLD_FLAG) {
-					uint32_t incomingWrite = core->busRead32(core, sCoopMailboxAddress + 24);
-					uint32_t incomingRead = core->busRead32(core, sCoopMailboxAddress + 28);
-					if (incomingWrite - incomingRead >= HNS_COOP_FLAG_QUEUE_SIZE)
-						continue;
-					/* Skip exact duplicate of the newest queued entry so
-					 * reconnect re-broadcasts do not fill the ring. ROM still
-					 * applies grants only when FlagSet flips unset→set. */
-					if (incomingWrite != incomingRead) {
-						uint32_t prev = core->busRead32(core,
-							sCoopMailboxAddress + 544 + ((incomingWrite - 1) % HNS_COOP_FLAG_QUEUE_SIZE) * 4);
-						if (prev == packed)
-							continue;
-					}
-					core->busWrite32(core, sCoopMailboxAddress + 544 + (incomingWrite % HNS_COOP_FLAG_QUEUE_SIZE) * 4, packed);
-					core->busWrite32(core, sCoopMailboxAddress + 24, incomingWrite + 1);
+					mSDLAndroidEnqueueMailboxWord(core, 544, 24, 28, HNS_COOP_FLAG_QUEUE_SIZE, packed, frame);
 				} else if (peerEvent.messageType == mPEER_MSG_WORLD_VAR) {
-					uint32_t incomingWrite = core->busRead32(core, sCoopMailboxAddress + 1064);
-					uint32_t incomingRead = core->busRead32(core, sCoopMailboxAddress + 1068);
-					if (incomingWrite - incomingRead >= HNS_COOP_VAR_QUEUE_SIZE)
-						continue;
-					if (incomingWrite != incomingRead) {
-						uint32_t prev = core->busRead32(core,
-							sCoopMailboxAddress + 1584 + ((incomingWrite - 1) % HNS_COOP_VAR_QUEUE_SIZE) * 4);
-						if (prev == packed)
-							continue;
-					}
-					core->busWrite32(core, sCoopMailboxAddress + 1584 + (incomingWrite % HNS_COOP_VAR_QUEUE_SIZE) * 4, packed);
-					core->busWrite32(core, sCoopMailboxAddress + 1064, incomingWrite + 1);
+					mSDLAndroidEnqueueMailboxWord(core, 1584, 1064, 1068, HNS_COOP_VAR_QUEUE_SIZE, packed, frame);
 				} else if (peerEvent.messageType == mPEER_MSG_WORLD_READY && packed != 0) {
 					core->busWrite32(core, sCoopMailboxAddress + 2100, 1);
+				} else if (peerEvent.messageType == mPEER_MSG_WORLD_RESYNC) {
+					mAndroidPeerLinkRequestStoryResync();
 				} else if (peerEvent.messageType == mPEER_MSG_POSITION) {
 					core->busWrite32(core, sCoopMailboxAddress + 2108, packed);
 					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);

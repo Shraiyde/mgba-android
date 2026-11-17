@@ -10,24 +10,22 @@
 #include <stdint.h>
 
 #define MPEER_DEFAULT_PORT 47621
-#define MPEER_PIN_LENGTH 4
+#define MPEER_PIN_LENGTH 6
 #define MPEER_MAX_PAYLOAD 4096
 
 enum mPeerMessageType {
 	mPEER_MSG_POSITION = 16,
 	mPEER_MSG_WORLD_FLAG = 17,
+	/* 18–22 reserved (legacy unused battle/chat stubs removed). */
+	mPEER_MSG_SIO_MULTI = 23,
 	mPEER_MSG_WORLD_VAR = 24,
 	mPEER_MSG_WORLD_READY = 25,
-	mPEER_MSG_BATTLE_STATE = 18,
-	mPEER_MSG_BATTLE_ACTION = 19,
-	mPEER_MSG_BATTLE_RESULT = 20,
-	mPEER_MSG_KEEPALIVE = 21,
-	mPEER_MSG_CHAT = 22,
-	mPEER_MSG_SIO_MULTI = 23,
 	mPEER_MSG_WORLD_CONFIG = 26,
 	mPEER_MSG_WORLD_CONFIG_ACK = 27,
 	mPEER_MSG_SIO_RESYNC = 28,
-	mPEER_MSG_WORLD_CONFIG_BLOB = 29
+	mPEER_MSG_WORLD_CONFIG_BLOB = 29,
+	/* Peer asks the other side to requeue shared story flags/vars. */
+	mPEER_MSG_WORLD_RESYNC = 30
 };
 
 /* While the transport is connected, an unanswered SIO word is held until the
