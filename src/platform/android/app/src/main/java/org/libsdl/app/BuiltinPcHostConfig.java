@@ -32,10 +32,6 @@ final class BuiltinPcHostConfig {
         (byte) 0x04, (byte) 0x85, (byte) 0x74, (byte) 0x67, (byte) 0xD1, (byte) 0x02, (byte) 0x7D, (byte) 0x20
     };
 
-    /** Hidden Tailscale fallback — off until Stephen asks. */
-    private static final boolean USE_TAILSCALE_FALLBACK = false;
-    private static final byte[] TAILSCALE_HOST_ENC = new byte[0];
-
     static String host() {
         return decodeString(HOST_ENC);
     }
@@ -46,13 +42,6 @@ final class BuiltinPcHostConfig {
 
     static byte[] sharedSecret() {
         return decodeBytes(SECRET_ENC);
-    }
-
-    /** Unused until USE_TAILSCALE_FALLBACK is enabled with a baked Tailscale IP. */
-    static String fallbackHost() {
-        if (!USE_TAILSCALE_FALLBACK || TAILSCALE_HOST_ENC.length == 0)
-            return null;
-        return decodeString(TAILSCALE_HOST_ENC);
     }
 
     static byte[] sessionKey() throws Exception {

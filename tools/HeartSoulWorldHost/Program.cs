@@ -69,7 +69,6 @@ internal static class Program
         EnsureFirewallRule(_listenPort);
 
         string[] zt = CollectAdapterIps("ZeroTier");
-        string[] ts = CollectAdapterIps("Tailscale");
 
         Console.WriteLine("HEART & SOUL — WORLD HOST");
         Console.WriteLine("=========================");
@@ -77,7 +76,6 @@ internal static class Program
         Console.WriteLine("Listen:     TCP *:" + _listenPort + " (all interfaces)");
         Console.WriteLine("Heartbeat:  1s  |  phone soft-resume timeout: 10s");
         Console.WriteLine("ZeroTier:  " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — is ZeroTier running?)"));
-        Console.WriteLine("Tailscale: " + (ts.Length > 0 ? string.Join(", ", ts) : "(not detected)"));
         Console.WriteLine("Protocol:  v" + ProtocolVersion);
         Console.WriteLine();
         Console.WriteLine("Phones: Co-op → Join PC Host (one tap — credentials are built into the APK).");

@@ -26,21 +26,9 @@ internal static class BuiltinPcHostConfig
         0xFC, 0x5C, 0x8E, 0x49, 0x81, 0xB1, 0x11, 0x14, 0x04, 0x85, 0x74, 0x67, 0xD1, 0x02, 0x7D, 0x20
     };
 
-    // Hidden Tailscale fallback — disabled until Stephen asks to enable it.
-    private const bool UseTailscaleFallback = false;
-    private static readonly byte[] TailscaleHostEnc = Array.Empty<byte>();
-
     internal static string Host() => DecodeString(HostEnc);
     internal static int Port() => int.Parse(DecodeString(PortEnc));
     internal static byte[] SharedSecret() => DecodeBytes(SecretEnc);
-
-    /// <summary>Unused until USE_TAILSCALE_FALLBACK is enabled with a baked Tailscale IP.</summary>
-    internal static string? FallbackHost()
-    {
-        if (!UseTailscaleFallback || TailscaleHostEnc.Length == 0)
-            return null;
-        return DecodeString(TailscaleHostEnc);
-    }
 
     internal static byte[] SessionKey()
     {
