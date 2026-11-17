@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: world-host-build
+  cancel-in-progress: true
+
 jobs:
   build-windows-world-host:
     runs-on: windows-latest
