@@ -49,7 +49,7 @@ must re-pair with a new 6-digit PIN.
 | --- | --- |
 | Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | Solid; built-in TURN default; no server prompts |
 | Mailbox I/O | Replace-same-id on full ring + WORLD_RESYNC request |
-| Avatar / presence | Solid; resume re-sync; v12 partner follower on-change |
+| Avatar / presence | Solid; resume re-sync; v12 follower; POSITION AbortPolicy queue (no DiscardOldest) |
 | Battle disconnect | SIO + ROM abort; no separate BATTLE_* opcodes |
 | Saves outside the app | Documents + periodic re-prompt |
 | Touch controls | Stick clamp + hide-toggle off R |

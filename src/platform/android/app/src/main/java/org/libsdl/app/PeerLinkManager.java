@@ -92,20 +92,20 @@ public final class PeerLinkManager {
     private static volatile PeerLinkManager instance;
     private static volatile boolean webRtcInitialized;
     // Native emulation/render threads must never wait on MQTT/WebRTC work.
-    // POSITION uses a short DiscardOldest queue (coalesce under movement).
-    // Mailbox (flags/vars/config/ready) and SIO use AbortPolicy queues so
-    // native only advances read pointers when the frame is still queued —
-    // never after a silent DiscardOldest drop.
+    // POSITION uses AbortPolicy (not DiscardOldest): dropped intermediates made
+    // the peer avatar skip tiles. A deeper queue keeps ordered tile updates;
+    // sendFrame returns false when full so native retries the same coords.
+    // Mailbox / SIO likewise use AbortPolicy.
     private static final int PEER_HDR_TYPE_OFFSET = 6;
     private static final int MPEER_MSG_POSITION = 16;
     private static final int MPEER_MSG_SIO_MULTI = 23;
     private static final ThreadPoolExecutor positionSender = new ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(2),
+        1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(32),
         task -> {
             Thread thread = new Thread(task, "HNS-Peer-Pos");
             thread.setDaemon(true);
             return thread;
-        }, new ThreadPoolExecutor.DiscardOldestPolicy());
+        }, new ThreadPoolExecutor.AbortPolicy());
     private static final ThreadPoolExecutor mailboxSender = new ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64),
         task -> {
