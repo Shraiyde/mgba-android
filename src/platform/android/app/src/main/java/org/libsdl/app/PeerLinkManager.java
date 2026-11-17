@@ -255,6 +255,14 @@ public final class PeerLinkManager {
         PeerLinkManager manager = instance;
         if (value != null) {
             SharedPreferences prefs = value.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            /* Drop any previously saved custom TURN so the UI never resurrects it. */
+            if (prefs.contains(PREF_TURN_URI) || prefs.contains(PREF_TURN_USER) || prefs.contains(PREF_TURN_PASS)) {
+                prefs.edit()
+                    .remove(PREF_TURN_URI)
+                    .remove(PREF_TURN_USER)
+                    .remove(PREF_TURN_PASS)
+                    .apply();
+            }
             nativeSetDiagLogs(prefs.getBoolean(PREF_DIAG_LOGS, false));
         }
         if (created)
@@ -329,7 +337,6 @@ public final class PeerLinkManager {
             choices.add("Reconnect as Host");
         else if ("join".equals(savedRole) && savedPin != null)
             choices.add("Reconnect");
-        choices.add("Optional TURN server…");
         boolean diagOn = prefs.getBoolean(PREF_DIAG_LOGS, false);
         choices.add(diagOn ? "Debug logs: ON" : "Debug logs: OFF");
         choices.add("Play Offline");
@@ -348,8 +355,6 @@ public final class PeerLinkManager {
                     startHost(savedPin, savedSession);
                 else if ("Reconnect".equals(choice))
                     startJoin(savedPin);
-                else if ("Optional TURN server…".equals(choice))
-                    showTurnServerDialog();
                 else if (choice.startsWith("Debug logs:")) {
                     boolean next = !diagOn;
                     prefs.edit().putBoolean(PREF_DIAG_LOGS, next).apply();
@@ -363,49 +368,12 @@ public final class PeerLinkManager {
             .show();
     }
 
-    private void showTurnServerDialog() {
-        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        EditText uriInput = new EditText(activity);
-        uriInput.setHint("turn:host:3478 (leave blank to disable)");
-        uriInput.setText(prefs.getString(PREF_TURN_URI, ""));
-        EditText userInput = new EditText(activity);
-        userInput.setHint("username (optional)");
-        userInput.setText(prefs.getString(PREF_TURN_USER, ""));
-        EditText passInput = new EditText(activity);
-        passInput.setHint("credential (optional)");
-        passInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        passInput.setText(prefs.getString(PREF_TURN_PASS, ""));
-        LinearLayout content = new LinearLayout(activity);
-        content.setOrientation(LinearLayout.VERTICAL);
-        int padding = (int) (20 * activity.getResources().getDisplayMetrics().density);
-        content.setPadding(padding, padding, padding, padding);
-        content.addView(uriInput);
-        content.addView(userInput);
-        content.addView(passInput);
-        new AlertDialog.Builder(activity)
-            .setTitle("Optional TURN server")
-            .setMessage("A built-in TURN server is already ON by default for Direct. Optionally add your own TURN URI (user/pass) to use alongside it. Leave blank to keep only the built-in servers.")
-            .setView(content)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Save", (d, w) -> {
-                prefs.edit()
-                    .putString(PREF_TURN_URI, uriInput.getText().toString().trim())
-                    .putString(PREF_TURN_USER, userInput.getText().toString().trim())
-                    .putString(PREF_TURN_PASS, passInput.getText().toString())
-                    .apply();
-                showStatus("TURN", uriInput.getText().toString().trim().isEmpty()
-                    ? "Custom TURN cleared — built-in TURN remains the default."
-                    : "Custom TURN saved; it is added alongside the built-in servers.");
-            })
-            .show();
-    }
-
     private List<PeerConnection.IceServer> buildIceServers() {
         List<PeerConnection.IceServer> servers = new ArrayList<>();
         servers.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
         servers.add(PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer());
         servers.add(PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer());
-        /* Built-in Metered ICE (STUN + TURN variants) — ON by default. */
+        /* Built-in Metered ICE only — no user TURN prefs. */
         String builtinUser = BuiltinTurnConfig.username();
         String builtinPass = BuiltinTurnConfig.credential();
         for (String url : BuiltinTurnConfig.URLS) {
@@ -416,22 +384,6 @@ public final class PeerLinkManager {
             }
             servers.add(b.createIceServer());
         }
-        Context prefsContext = activity != null ? activity : appContext;
-        if (prefsContext == null)
-            return servers;
-        SharedPreferences prefs = prefsContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String turnUri = prefs.getString(PREF_TURN_URI, "");
-        if (turnUri == null || turnUri.trim().isEmpty())
-            return servers;
-        /* Optional user TURN adds/overrides alongside the built-in set. */
-        String user = prefs.getString(PREF_TURN_USER, "");
-        String pass = prefs.getString(PREF_TURN_PASS, "");
-        PeerConnection.IceServer.Builder turn = PeerConnection.IceServer.builder(turnUri.trim());
-        if (user != null && !user.isEmpty())
-            turn.setUsername(user);
-        if (pass != null && !pass.isEmpty())
-            turn.setPassword(pass);
-        servers.add(turn.createIceServer());
         return servers;
     }
 
