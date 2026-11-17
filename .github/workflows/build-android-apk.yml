@@ -76,5 +76,5 @@ jobs:
           gh release create "$tag" src/platform/android/app/build/outputs/apk/debug/app-debug.apk \
             --repo "${{ github.repository }}" \
             --title "Heart & Soul Co-op Android Build ${{ github.run_number }}" \
-            --notes "Installable arm64 Android test APK with the PC-server co-op client. Load the matching patched Heart & Soul ROM separately." \
+            --notes "Installable arm64 Android co-op APK. Co-op → Join PC Host (one tap over ZeroTier to the baked-in World Host). No PIN. Load the matching patched Heart & Soul ROM separately." \
             --latest=false

@@ -9,7 +9,6 @@ import android.content.SharedPreferences;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.util.Base64;
-import android.util.Log;
 import android.view.Gravity;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -66,12 +65,10 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * PIN rendezvous, WebRTC direct transport, and MQTT relay fallback.
- * MQTT carries only short-lived signaling and encrypted fallback frames.
+ * Co-op link. Primary path: one-tap Join PC Host over ZeroTier TCP to the
+ * baked-in World Host. No MQTT / WebRTC / TURN for game data.
  */
 public final class PeerLinkManager {
-    /** Filter: adb logcat -s HnsCoop — status / ICE / presence for phone reports. */
-    private static final String COOP_LOG = "HnsCoop";
     private static final String BROKER = "wss://broker.emqx.io:8084/mqtt";
     private static final String PREFS = "hns_peer_link";
     private static final String PREF_ROLE = "role";
@@ -87,8 +84,8 @@ public final class PeerLinkManager {
     private static final int MAX_PEER_FRAME_SIZE = 16 + 4096;
     private static final int MAX_ENCRYPTED_FRAME_SIZE = 12 + MAX_PEER_FRAME_SIZE + 16;
     private static final int MAX_MQTT_PAYLOAD_SIZE = 16 * 1024;
-    /** Wait long enough for TURN allocate over 443/TCP before falling back to MQTT Relay. */
     private static final int DIRECT_TIMEOUT_MS = 15000;
+    private static final int PC_DROP_TOLERANCE_MS = 10000;
 
     private static volatile Activity activity;
     private static volatile Context appContext;
@@ -141,29 +138,23 @@ public final class PeerLinkManager {
     };
     private final Runnable pcHeartbeat = new Runnable() {
         @Override public void run() {
-            if (pcServerMode && mqttConnected && pcHelloSent) {
-                publish(pcUpHeartbeatTopic(), pcAuthSignal("heartbeat"), 0, false);
-                handler.postDelayed(this, 10000);
-            }
+            // Legacy MQTT PC heartbeat removed — ZeroTier TCP host beats instead.
         }
     };
     private final Runnable directTimeout = new Runnable() {
         @Override public void run() {
+            if (pcServerMode)
+                return; // ZeroTier TCP path — never WebRTC/TURN/MQTT relay statuses.
             if (accepted && !directConnected) {
-                if (pcServerMode)
-                    showStatus("PC Host",
-                        "Still connecting to the PC — game data stays on the host path; retrying WebRTC…");
-                else
-                    showStatus("Relay",
-                        "Direct phone link unavailable — game data is on the broker relay.");
+                showStatus("Reconnecting…", "Waiting for the peer link…");
                 handler.removeCallbacks(directRetry);
-                handler.postDelayed(directRetry, pcServerMode ? 3000 : 8000);
+                handler.postDelayed(directRetry, 8000);
             }
         }
     };
     private final Runnable directRetry = new Runnable() {
         @Override public void run() {
-            if (!accepted || sessionKey == null || directConnected)
+            if (pcServerMode || !accepted || sessionKey == null || directConnected)
                 return;
             try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
             try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
@@ -171,34 +162,23 @@ public final class PeerLinkManager {
             dataChannel = null;
             directViaTurn = false;
             pendingCandidates.clear();
-            // PC world host always expects the phone to offer (one PC per phone).
-            beginDirectLink(pcServerMode || host);
+            beginDirectLink(host);
         }
     };
     private final Runnable pcServerWatchdog = new Runnable() {
         @Override public void run() {
-            if (pcServerMode) {
-                if (accepted && lastPcServerHeartbeatAt != 0
-                    && System.currentTimeMillis() - lastPcServerHeartbeatAt > 90000) {
-                    accepted = false;
-                    pcHelloSent = false;
-                    sessionKey = null;
-                    pcPeerId = null;
-                    pcPeerPublicKey = null;
-                    sendCounter.set(1);
-                    resetReceiveCounters();
-                    ecdhKeyPair = null;
-                    try {
-                        ecdhKeyPair = createEcdhKeyPair();
-                    } catch (Exception ignored) {}
-                    lastPcServerHeartbeatAt = 0;
-                    updateNativeConnection();
-                    if (mqttConnected)
-                        sendPcHello();
-                    showStatus("PC server offline", "The PC server stopped responding. Waiting for it to reconnect…");
-                }
-                handler.postDelayed(this, 10000);
+            if (!pcServerMode || !retryEnabled) {
+                return;
             }
+            if (accepted && lastPcServerHeartbeatAt != 0
+                && System.currentTimeMillis() - lastPcServerHeartbeatAt > PC_DROP_TOLERANCE_MS
+                && !pcTcpConnected) {
+                // Soft hold: keep sessionKey/accepted so partner stays visible;
+                // only surface Reconnecting once while TCP retries.
+                showStatus("Reconnecting…", "Waiting for the PC host…");
+                ensurePcTcpLink();
+            }
+            handler.postDelayed(this, 2000);
         }
     };
     private final Runnable acceptRetry = new Runnable() {
@@ -212,9 +192,15 @@ public final class PeerLinkManager {
         }
     };
     private final AtomicLong sendCounter = new AtomicLong(1);
-    /** Index 0/1 = phone roles; index 2 = PC World Host (protocol v3). */
+    /** Index 0/1 = phone roles; index 2 = PC World Host (protocol v3+). */
     private final long[] receiveCounters = new long[] {0, 0, 0};
     private final List<IceCandidate> pendingCandidates = Collections.synchronizedList(new ArrayList<>());
+    private final PcHostSocket pcSocket = new PcHostSocket();
+    private volatile String pcHostAddress;
+    private volatile int pcHostPort;
+    private volatile boolean pcTcpConnected;
+    private volatile String lastStatusTitle;
+    private volatile boolean pcReconnectToastShown;
 
     private synchronized void resetReceiveCounters() {
         receiveCounters[0] = receiveCounters[1] = receiveCounters[2] = 0;
@@ -274,7 +260,47 @@ public final class PeerLinkManager {
                     .remove(PREF_TURN_PASS)
                     .apply();
             }
-            nativeSetDiagLogs(prefs.getBoolean(PREF_DIAG_LOGS, false));
+            // Diag / HnsCoop log hooks stay off — Stephen does not want debug logs.
+            nativeSetDiagLogs(false);
+            pcSocket.setListener(new PcHostSocket.Listener() {
+                @Override public void onReady(int role, int players) {
+                    host = role == 0;
+                    try {
+                        sessionKey = BuiltinPcHostConfig.sessionKey();
+                    } catch (Exception ignored) {
+                        return;
+                    }
+                    sendCounter.set(1);
+                    resetReceiveCounters();
+                    accepted = true;
+                    lastPcServerHeartbeatAt = System.currentTimeMillis();
+                    pcReconnectToastShown = false;
+                    reopenNativeSession();
+                    showStatus("Connected to PC host", "Linked to the PC world host.");
+                }
+                @Override public void onConnected() {
+                    pcTcpConnected = true;
+                    lastPcServerHeartbeatAt = System.currentTimeMillis();
+                    pcReconnectToastShown = false;
+                    updateNativeConnection();
+                    if (accepted)
+                        showStatus("Connected to PC host", "Linked to the PC world host.");
+                }
+                @Override public void onDisconnected() {
+                    pcTcpConnected = false;
+                    // Keep accepted/sessionKey so partner sprites stay up during soft resume.
+                    updateNativeConnection();
+                    if (pcServerMode && accepted && retryEnabled)
+                        showStatus("Reconnecting…", "Waiting for the PC host…");
+                }
+                @Override public void onFrame(byte[] encrypted) {
+                    lastPcServerHeartbeatAt = System.currentTimeMillis();
+                    handleEncryptedFrame(encrypted);
+                }
+                @Override public void onHostBusy() {
+                    showStatus("PC host full", "Two phones are already connected.");
+                }
+            });
         }
         if (created)
             manager.handler.post(manager::restoreSavedSession);
@@ -288,16 +314,11 @@ public final class PeerLinkManager {
     }
 
     private void restoreSavedSession() {
-        if (retryEnabled || mqtt != null || activity == null)
+        if (retryEnabled || activity == null)
             return;
         SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String savedRole = prefs.getString(PREF_ROLE, null);
-        String savedPin = prefs.getString(PREF_PIN, null);
-        String savedSession = prefs.getString(PREF_SESSION, null);
-        if (savedPin == null || !savedPin.matches(PIN_PATTERN))
-            return;
-        if ("pc".equals(savedRole))
-            startPcServerJoin(savedPin);
+        if ("pc".equals(prefs.getString(PREF_ROLE, null)))
+            startPcHostJoin();
     }
 
     public static void syncNativeConnection() {
@@ -307,7 +328,11 @@ public final class PeerLinkManager {
     }
 
     private void syncNativeConnectionInternal() {
-        boolean connected = accepted && (mqttConnected || directConnected);
+        // PC mode: stay natively linked while the session is accepted so partner
+        // visibility holds across a brief TCP resume (~10s).
+        boolean connected = pcServerMode
+            ? (accepted && sessionKey != null)
+            : (accepted && (mqttConnected || directConnected));
         nativeConnected = connected;
         if (connected)
             nativePeerConnected(host);
@@ -332,12 +357,10 @@ public final class PeerLinkManager {
     private void showPairingDialogOnUi() {
         SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String savedRole = prefs.getString(PREF_ROLE, null);
-        String savedPin = prefs.getString(PREF_PIN, null);
-        String savedSession = prefs.getString(PREF_SESSION, null);
 
         List<String> choices = new ArrayList<>();
-        choices.add("Join PC Host (PIN)");
-        if ("pc".equals(savedRole) && savedPin != null)
+        choices.add("Join PC Host");
+        if ("pc".equals(savedRole))
             choices.add("Reconnect to PC Host");
         choices.add("Play Offline");
 
@@ -345,10 +368,8 @@ public final class PeerLinkManager {
             .setTitle("Heart & Soul Co-op")
             .setItems(choices.toArray(new String[0]), (dialog, which) -> {
                 String choice = choices.get(which);
-                if ("Join PC Host (PIN)".equals(choice))
-                    showPcServerPinDialog();
-                else if ("Reconnect to PC Host".equals(choice))
-                    startPcServerJoin(savedPin);
+                if ("Join PC Host".equals(choice) || "Reconnect to PC Host".equals(choice))
+                    startPcHostJoin();
                 else if ("Play Offline".equals(choice)) {
                     closeCurrentSession(true);
                     showStatus("Offline mode", "The co-op session has been stopped.");
@@ -385,20 +406,13 @@ public final class PeerLinkManager {
 
     private void announceDirectLink() {
         if (pcServerMode) {
-            if (directViaTurn)
-                showStatus("PC Host (TURN)",
-                    "Connected to the PC world host via TURN. Game data is host-authoritative.");
-            else
-                showStatus("PC Host (Direct)",
-                    "Connected to the PC world host. Game data is host-authoritative.");
+            showStatus("Connected to PC host", "Linked to the PC world host.");
             return;
         }
         if (directViaTurn)
-            showStatus("Direct (TURN)",
-                "Phone-to-phone link is active via TURN relay. Game data stays off the MQTT broker.");
+            showStatus("Connected to PC host", "Legacy path unused.");
         else
-            showStatus("Direct",
-                "Phone-to-phone connection is active. All co-op data is peer-to-peer.");
+            showStatus("Connected to PC host", "Legacy path unused.");
     }
 
     private static boolean candidateLooksLikeRelay(IceCandidate candidate) {
@@ -486,28 +500,7 @@ public final class PeerLinkManager {
         dialog.show();
     }
 
-    private void showPcServerPinDialog() {
-        EditText pinInput = new EditText(activity);
-        pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        pinInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(PIN_DIGITS) });
-        pinInput.setGravity(Gravity.CENTER);
-        pinInput.setTextSize(28);
-
-        new AlertDialog.Builder(activity)
-            .setTitle("Enter the PC Host PIN")
-            .setView(pinInput)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Connect", (dialog, which) -> {
-                String entered = pinInput.getText().toString().trim();
-                if (entered.matches(PIN_PATTERN))
-                    startPcServerJoin(entered);
-                else
-                    showMessage("Enter all six digits.");
-            })
-            .show();
-    }
-
-    private void startPcServerJoin(String enteredPin) {
+    private void startPcHostJoin() {
         closeCurrentSession(false);
         Context serviceContext = appContext != null ? appContext : activity;
         if (serviceContext != null)
@@ -516,11 +509,14 @@ public final class PeerLinkManager {
         pcServerMode = true;
         pcHelloSent = false;
         retryEnabled = true;
-        pin = enteredPin;
+        pin = null;
         accepted = false;
         directConnected = false;
         nativeConnected = false;
         sessionKey = null;
+        pcReconnectToastShown = false;
+        lastStatusTitle = null;
+        lastPcServerHeartbeatAt = 0;
 
         SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         pcClientId = prefs.getString("pc_client_id", null);
@@ -528,12 +524,22 @@ public final class PeerLinkManager {
             pcClientId = UUID.randomUUID().toString().replace("-", "");
             prefs.edit().putString("pc_client_id", pcClientId).apply();
         }
-        prefs.edit().putString(PREF_ROLE, "pc").putString(PREF_PIN, pin).apply();
+        prefs.edit().putString(PREF_ROLE, "pc").remove(PREF_PIN).remove(PREF_SESSION).apply();
 
-        connectMqtt(() -> {
-            subscribe(pcRoomTopic());
-            showStatus("Connecting to PC Host", "Looking for world host PIN " + pin + "…");
-        });
+        try {
+            pcHostAddress = BuiltinPcHostConfig.host();
+            pcHostPort = BuiltinPcHostConfig.port();
+            pinKey = BuiltinPcHostConfig.joinKey();
+            sessionKey = BuiltinPcHostConfig.sessionKey();
+        } catch (Exception e) {
+            showMessage("Could not start PC host link.");
+            return;
+        }
+
+        handler.removeCallbacks(pcServerWatchdog);
+        handler.postDelayed(pcServerWatchdog, 2000);
+        showStatus("Reconnecting…", "Opening link to the PC host…");
+        ensurePcTcpLink();
     }
 
     private void startHost(String existingPin, String existingSession) {
@@ -764,16 +770,11 @@ public final class PeerLinkManager {
             return;
         try {
             if (pcServerMode) {
+                // MQTT is lookup/control only — never ingest game frames from the broker.
                 if (topic.equals(pcRoomTopic())) {
                     handlePcRoomAdvertisement(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
-                } else if (topic.equals(pcSignalDownTopic())) {
-                    handleWorldHostSignal(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 } else if (topic.equals(pcDownControlTopic())) {
                     handlePcServerControl(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
-                } else if (topic.equals(pcDownFrameTopic())) {
-                    handleEncryptedFrame(payload);
-                } else if (topic.equals(signalInTopic())) {
-                    handleSignal(new JSONObject(new String(payload, StandardCharsets.UTF_8)));
                 }
                 return;
             }
@@ -829,13 +830,40 @@ public final class PeerLinkManager {
         accepted = false;
         pcPeerId = null;
         pcPeerPublicKey = null;
+        if (advert.has("host"))
+            pcHostAddress = advert.optString("host", null);
+        pcHostPort = advert.optInt("port", advert.optInt("lanPort", BuiltinPcHostConfig.port()));
         updateNativeConnection();
         sendCounter.set(1);
         resetReceiveCounters();
         ecdhKeyPair = createEcdhKeyPair();
-        subscribe(pcDownControlTopic(), pcDownFrameTopic(), pcSignalDownTopic());
+        // Control/lookup only — never subscribe to MQTT game-frame topics.
+        subscribe(pcDownControlTopic());
         sendPcHello();
-        showStatus("PC Host found", "Authenticating… WebRTC to the world host comes next.");
+        ensurePcTcpLink();
+        showStatus("Reconnecting…", "PIN resolved; opening direct TCP to the PC host…");
+    }
+
+    private void ensurePcTcpLink() {
+        if (!pcServerMode || pcClientId == null || !retryEnabled)
+            return;
+        if (pcHostAddress == null || pcHostAddress.isEmpty()) {
+            try {
+                pcHostAddress = BuiltinPcHostConfig.host();
+                pcHostPort = BuiltinPcHostConfig.port();
+            } catch (Exception ignored) {
+                return;
+            }
+        }
+        if (pcSocket.isConnected())
+            return;
+        try {
+            String proof = BuiltinPcHostConfig.helloProof(pcClientId);
+            String hello = "HELLO " + pcClientId + " " + proof;
+            pcSocket.connect(pcHostAddress, pcHostPort, hello);
+        } catch (Exception ignored) {
+            showStatus("Reconnecting…", "Waiting for the PC host…");
+        }
     }
 
     private void sendPcHello() {
@@ -869,10 +897,23 @@ public final class PeerLinkManager {
         JSONObject data = envelope.optJSONObject("data");
         if ("server-heartbeat".equals(type)) {
             lastPcServerHeartbeatAt = System.currentTimeMillis();
+            if (data != null) {
+                if (data.has("host"))
+                    pcHostAddress = data.optString("host", pcHostAddress);
+                if (data.has("port"))
+                    pcHostPort = data.optInt("port", pcHostPort);
+                ensurePcTcpLink();
+            }
         } else if ("waiting".equals(type)) {
-            if (data != null && data.optBoolean("worldHost", false))
+            if (data != null && data.optBoolean("worldHost", false)) {
                 applyWorldHostSessionKey(data.optString("sessionKey", null));
-            showStatus("Waiting for companion", "PC Host is ready. Waiting for the second phone…");
+                if (data.has("host"))
+                    pcHostAddress = data.optString("host", pcHostAddress);
+                if (data.has("port"))
+                    pcHostPort = data.optInt("port", pcHostPort);
+                ensurePcTcpLink();
+            }
+            showStatus("Reconnecting…", "PC host ready — waiting for companion / direct TCP…");
         } else if ("presence-resync".equals(type)) {
             nativeRequestStoryResync();
         } else if ("peer".equals(type) && data != null) {
@@ -889,6 +930,10 @@ public final class PeerLinkManager {
                     return;
                 applyWorldHostSessionKey(data.optString("sessionKey", null));
                 pcPeerPublicKey = "world-host";
+                if (data.has("host"))
+                    pcHostAddress = data.optString("host", pcHostAddress);
+                if (data.has("port"))
+                    pcHostPort = data.optInt("port", pcHostPort);
             } else {
                 String peerPublicKey = data.getString("pub");
                 String proof = data.getString("proof");
@@ -906,7 +951,12 @@ public final class PeerLinkManager {
             resetReceiveCounters();
             accepted = true;
             reopenNativeSession();
-            beginDirectLink(true);
+            // PC host: game data is direct TCP only — never WebRTC/TURN/MQTT frames.
+            ensurePcTcpLink();
+            if (pcTcpConnected)
+                showStatus("Connected to PC host", "Both phones linked through the PC.");
+            else
+                showStatus("Reconnecting…", "Companion ready; opening direct TCP…");
         } else if ("peer-disconnected".equals(type)) {
             boolean partnerReturning = data != null && data.optBoolean("reconnecting", false);
             handler.removeCallbacks(directTimeout);
@@ -921,10 +971,8 @@ public final class PeerLinkManager {
             pendingCandidates.clear();
             if (pcServerMode && partnerReturning) {
                 // Stay authenticated to the PC host; only the companion slot is empty.
-                // A later "peer" control message re-opens WebRTC without a full re-PIN.
                 updateNativeConnection();
-                showStatus("PC Host",
-                    "Partner reconnecting — staying on the PC host…");
+                showStatus("Reconnecting…", "Partner reconnecting — staying on the PC host…");
                 return;
             }
             accepted = false;
@@ -941,7 +989,7 @@ public final class PeerLinkManager {
             updateNativeConnection();
             if (pcServerMode && mqttConnected)
                 sendPcHello();
-            showStatus(pcServerMode ? "PC Host" : "Relay",
+            showStatus(pcServerMode ? "Reconnecting…" : "Relay",
                 "Partner left — holding the room. Re-pairs when they return.");
         } else if ("full".equals(type) || "rejected".equals(type)) {
             showStatus("PC server refused connection", data != null ? data.optString("reason", "Unable to join this room.") : "Unable to join this room.");
@@ -1180,7 +1228,7 @@ public final class PeerLinkManager {
                             handler.removeCallbacks(directRetry);
                             handler.postDelayed(directRetry, 2000);
                         } else {
-                            showStatus("Relay",
+                            showStatus("Reconnecting…",
                                 "Direct phone link dropped — game data is on the broker relay.");
                             handler.removeCallbacks(directRetry);
                             handler.postDelayed(directRetry, 5000);
@@ -1241,11 +1289,13 @@ public final class PeerLinkManager {
             }
         } catch (Exception e) {
             directConnected = false;
-            showStatus("Relay", "Direct phone link unavailable — game data is on the broker relay.");
+            showStatus("Reconnecting…", "Direct phone link unavailable — game data is on the broker relay.");
         }
     }
 
     private void beginDirectLink(boolean offerer) {
+        if (pcServerMode)
+            return; // Game data is ZeroTier TCP only — never WebRTC/TURN.
         if (!accepted || sessionKey == null)
             return;
         subscribe(signalInTopic());
@@ -1253,13 +1303,8 @@ public final class PeerLinkManager {
         handler.removeCallbacks(directRetry);
         directViaTurn = false;
         handler.postDelayed(directTimeout, DIRECT_TIMEOUT_MS);
-        if (pcServerMode)
-            showStatus("PC Host",
-                "Trying Direct (built-in TURN ready) — connecting WebRTC to the PC world host…");
-        else
-            showStatus("Trying Direct (built-in TURN ready)",
-                "Phone-to-phone WebRTC with Metered TURN; MQTT relay is backup until Direct connects.");
-        createPeerConnection(pcServerMode || offerer);
+        showStatus("Reconnecting…", "Waiting for the peer link…");
+        createPeerConnection(offerer);
     }
 
     private void createAnswer() {
@@ -1291,7 +1336,7 @@ public final class PeerLinkManager {
                     handler.removeCallbacks(directRetry);
                     announceDirectLink();
                 } else if (accepted && channel.state() != DataChannel.State.CONNECTING) {
-                    showStatus("Relay",
+                    showStatus("Reconnecting…",
                         "Direct phone link unavailable — game data is on the broker relay.");
                     handler.removeCallbacks(directRetry);
                     handler.postDelayed(directRetry, 5000);
@@ -1390,16 +1435,19 @@ public final class PeerLinkManager {
             return false;
         try {
             byte[] encrypted = encryptFrame(frame);
-            // Prefer direct WebRTC for ALL co-op game data. Broker MQTT is
-            // signaling-first and only a QoS 0 fallback when Direct is down.
+            if (pcServerMode) {
+                // HARD RULE: game data is direct ZeroTier TCP to the PC host only.
+                if (pcSocket.send(encrypted))
+                    return true;
+                ensurePcTcpLink();
+                return false;
+            }
             if (directConnected && dataChannel != null && dataChannel.state() == DataChannel.State.OPEN) {
                 if (dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(encrypted), true)))
                     return true;
             }
             if (!mqttConnected)
                 return false;
-            if (pcServerMode)
-                return publish(pcUpFrameTopic(), encrypted, 0, false);
             return publish(host ? relayJoinTopic() : relayHostTopic(), encrypted, 0, false);
         } catch (Exception ignored) {}
         return false;
@@ -1445,7 +1493,9 @@ public final class PeerLinkManager {
     }
 
     private synchronized void updateNativeConnection() {
-        boolean connected = accepted && (mqttConnected || directConnected);
+        boolean connected = pcServerMode
+            ? (accepted && sessionKey != null)
+            : (accepted && (mqttConnected || directConnected));
         if (connected != nativeConnected) {
             nativeConnected = connected;
             if (connected)
@@ -1632,10 +1682,13 @@ public final class PeerLinkManager {
         handler.removeCallbacks(pcServerWatchdog);
         handler.removeCallbacks(directTimeout);
         handler.removeCallbacks(directRetry);
-        if (pcServerMode && mqtt != null && mqtt.isConnected() && pcClientId != null)
-            publish(pcUpLeaveTopic(), pcAuthSignal("leave"), 0, false);
         if (host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
             publish(roomTopic(), new byte[0], 1, true);
+        pcSocket.disconnect();
+        pcTcpConnected = false;
+        pcHostAddress = null;
+        pcReconnectToastShown = false;
+        lastStatusTitle = null;
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
         try { if (mqtt != null && mqtt.isConnected()) mqtt.disconnect(); } catch (Exception ignored) {}
@@ -1671,26 +1724,31 @@ public final class PeerLinkManager {
     }
 
     private void showStatus(String title, String message) {
-        Log.i(COOP_LOG, title + ": " + message
-            + " pcHost=" + pcServerMode
-            + " direct=" + directConnected
-            + " turn=" + directViaTurn
-            + " accepted=" + accepted
-            + " session=" + (sessionId != null ? sessionId : "-"));
+        // No HnsCoop / logcat debug hooks. Deduplicate toasts to avoid flapping.
+        if (title != null && title.equals(lastStatusTitle))
+            return;
+        if ("Reconnecting…".equals(title)) {
+            if (pcReconnectToastShown)
+                return;
+            pcReconnectToastShown = true;
+        } else if ("Connected to PC host".equals(title)) {
+            pcReconnectToastShown = false;
+        }
+        lastStatusTitle = title;
         Activity current = activity;
         if (current == null)
             return;
         // Status updates must never create a modal window over the SDL surface.
+        final String toast = title;
         current.runOnUiThread(() ->
-            Toast.makeText(current, title + ": " + message, Toast.LENGTH_LONG).show());
+            Toast.makeText(current, toast, Toast.LENGTH_SHORT).show());
     }
 
     private void showMessage(String message) {
-        Log.i(COOP_LOG, "msg: " + message);
         Activity current = activity;
         if (current != null)
             current.runOnUiThread(() ->
-                Toast.makeText(current, message, Toast.LENGTH_LONG).show());
+                Toast.makeText(current, message, Toast.LENGTH_SHORT).show());
     }
 
     private static class SimpleSdpObserver implements SdpObserver {

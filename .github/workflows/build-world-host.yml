@@ -53,5 +53,5 @@ jobs:
             --repo "${{ github.repository }}" `
             --target "${{ github.sha }}" `
             --title "Heart & Soul World Host ${{ github.run_number }}" `
-            --notes "Windows x64 world host. Unzip, run Start-WorldHost.bat, enter the 6-digit ROOM PIN on both phones (Join PC Host). WebRTC to the PC with built-in Metered TURN; MQTT is signaling only. Optional LAN TCP 27770." `
+            --notes "Windows x64 ZeroTier world host. Unzip, run Start-WorldHost.bat on the PC (same ZeroTier network as the phones). Phones: Co-op → Join PC Host (one tap, no PIN). Plain TCP only — no MQTT/TURN/relay. Host opens a Windows firewall rule for the listen port." `
             --latest=false

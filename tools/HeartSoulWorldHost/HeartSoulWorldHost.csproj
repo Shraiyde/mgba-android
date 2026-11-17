@@ -7,8 +7,4 @@
     <RootNamespace>HeartSoulWorldHost</RootNamespace>
     <AssemblyName>HeartSoulWorldHost</AssemblyName>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
-    <PackageReference Include="SIPSorcery" Version="10.0.17" />
-  </ItemGroup>
 </Project>
