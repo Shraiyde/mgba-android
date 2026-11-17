@@ -1387,7 +1387,8 @@ public final class PeerLinkManager {
     }
 
     private void closeCurrentSession(boolean clearPreferences) {
-        frameSender.getQueue().clear();
+        positionSender.getQueue().clear();
+        mailboxSender.getQueue().clear();
         sioFrameSender.getQueue().clear();
         boolean wasConnected = nativeConnected;
         retryEnabled = false;
