@@ -3,14 +3,18 @@ package org.libsdl.app;
 import java.nio.charset.StandardCharsets;
 
 import javax.crypto.Mac;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Baked ZeroTier PC World Host endpoint + join key.
- * XOR-obfuscated so values are not plaintext in the tree; never log decoded material.
+ * Default ZeroTier PC host endpoint + fixed PIN salt.
+ * Default host/port prefill the Join dialog (remembered/editable). Salt is obfuscated.
  */
 final class BuiltinPcHostConfig {
     private BuiltinPcHostConfig() {}
+
+    private static final int PBKDF2_ITERATIONS = 500_000;
 
     private static final byte[] K = {
         (byte) 0xA7, (byte) 0x3C, (byte) 0x91, (byte) 0x5E, (byte) 0x28, (byte) 0xF4, (byte) 0x6B, (byte) 0xD0,
@@ -25,31 +29,39 @@ final class BuiltinPcHostConfig {
     private static final byte[] PORT_ENC = {
         (byte) 0x95, (byte) 0x0B, (byte) 0xA6, (byte) 0x69, (byte) 0x18
     };
-    private static final byte[] JOIN_ENC = {
-        (byte) 0xEF, (byte) 0x4F, (byte) 0xCB, (byte) 0x2A, (byte) 0x11, (byte) 0x9F, (byte) 0x3A, (byte) 0xBD,
-        (byte) 0x2B, (byte) 0xB2, (byte) 0x29, (byte) 0x3C, (byte) 0xDF, (byte) 0x5D, (byte) 0xF9, (byte) 0x1D,
-        (byte) 0x39, (byte) 0xED, (byte) 0x06, (byte) 0xAB, (byte) 0x2F, (byte) 0x98, (byte) 0x08, (byte) 0x10,
-        (byte) 0x96, (byte) 0x56, (byte) 0xC4, (byte) 0x3A, (byte) 0x1E, (byte) 0x95, (byte) 0x2C, (byte) 0xB5
+    private static final byte[] SALT_ENC = {
+        (byte) 0xEF, (byte) 0x52, (byte) 0xE2, (byte) 0x04, (byte) 0x5C, (byte) 0xA7, (byte) 0x0A, (byte) 0xBC,
+        (byte) 0x6D, (byte) 0x94, (byte) 0x4E, (byte) 0x69, (byte) 0xD1, (byte) 0x4B, (byte) 0xE4, (byte) 0x4B
     };
 
-    static String host() {
+    static String defaultHost() {
         return decode(HOST_ENC);
     }
 
-    static int port() {
+    static int defaultPort() {
         return Integer.parseInt(decode(PORT_ENC));
     }
 
-    static byte[] joinKey() {
-        return decode(JOIN_ENC).getBytes(StandardCharsets.UTF_8);
+    /** Prefill string for the advanced host field: host:port */
+    static String defaultEndpoint() {
+        return defaultHost() + ":" + defaultPort();
     }
 
-    static byte[] sessionKey() throws Exception {
-        return hmac(joinKey(), "HNS-ZT-SESSION-V1".getBytes(StandardCharsets.UTF_8));
+    static byte[] fixedSalt() {
+        return decode(SALT_ENC).getBytes(StandardCharsets.UTF_8);
     }
 
-    static String helloProof(String clientId) throws Exception {
-        byte[] dig = hmac(joinKey(), ("hello|" + clientId).getBytes(StandardCharsets.UTF_8));
+    static byte[] derivePinKey(String pin) throws Exception {
+        PBEKeySpec spec = new PBEKeySpec(pin.toCharArray(), fixedSalt(), PBKDF2_ITERATIONS, 256);
+        return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+    }
+
+    static byte[] deriveSessionKey(byte[] pinKey) throws Exception {
+        return hmac(pinKey, "HNS-ZT-SESSION-V1".getBytes(StandardCharsets.UTF_8));
+    }
+
+    static String helloProof(byte[] pinKey, String clientId) throws Exception {
+        byte[] dig = hmac(pinKey, ("hello|" + clientId).getBytes(StandardCharsets.UTF_8));
         return android.util.Base64.encodeToString(dig, android.util.Base64.NO_WRAP);
     }
 

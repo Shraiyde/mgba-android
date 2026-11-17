@@ -2,15 +2,18 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace HeartSoulWorldHost;
 
 /// <summary>
-/// ZeroTier Minecraft-style world host: phones connect with plain TCP only.
-/// No MQTT, no WebRTC, no TURN, no relay. Join key is baked into APK + host.
+/// ZeroTier/Tailscale Minecraft-style world host: phones connect with plain TCP.
+/// No MQTT, no WebRTC, no TURN, no relay, no UPnP/public port-forward.
+/// PIN authenticates; phones use the host's ZeroTier (or Tailscale) IP.
 /// </summary>
 internal sealed class ClientSlot
 {
@@ -25,9 +28,14 @@ internal sealed class ClientSlot
     public int Role { get; set; } = -1;
 }
 
+internal sealed class RoomConfig
+{
+    public string? Pin { get; set; }
+}
+
 internal static class Program
 {
-    private const int ProtocolVersion = 5;
+    private const int ProtocolVersion = 6;
     private const uint PeerMagic = 0x4D504C4Bu;
     private const ushort PeerVersion = 1;
     private const int HostSenderId = 2;
@@ -46,7 +54,9 @@ internal static class Program
 
     private static readonly ConcurrentDictionary<string, ClientSlot> Clients = new();
     private static readonly SemaphoreSlim Gate = new(1, 1);
+    private static byte[] _pinKey = [];
     private static byte[] _sessionKey = [];
+    private static string _pin = "";
     private static long _hostSendCounter = 1;
     private static int _hostFrameSeq = 1;
     private static CancellationTokenSource _stop = new();
@@ -55,19 +65,53 @@ internal static class Program
     private static async Task Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
-        _listenPort = BuiltinPcHostConfig.Port();
-        _sessionKey = BuiltinPcHostConfig.SessionKey();
+        _listenPort = BuiltinPcHostConfig.DefaultPort();
+
+        if (args.Length >= 1 && args[0].Equals("--add-firewall", StringComparison.OrdinalIgnoreCase))
+        {
+            int port = args.Length >= 2 && int.TryParse(args[1], out int p) ? p : _listenPort;
+            Environment.Exit(AddFirewallRule(port) ? 0 : 1);
+            return;
+        }
+
+        string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HeartSoulWorldHost");
+        Directory.CreateDirectory(root);
+        string configPath = Path.Combine(root, "host.json");
+        bool resetPin = args.Any(a => a.Equals("--new-pin", StringComparison.OrdinalIgnoreCase));
+
+        RoomConfig config = File.Exists(configPath)
+            ? JsonSerializer.Deserialize<RoomConfig>(await File.ReadAllTextAsync(configPath)) ?? new RoomConfig()
+            : new RoomConfig();
+
+        if (resetPin || string.IsNullOrWhiteSpace(config.Pin) || config.Pin.Length != 6 || config.Pin.Any(c => !char.IsAsciiDigit(c)))
+        {
+            config.Pin = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+            await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
+        }
+
+        _pin = config.Pin!;
+        _pinKey = BuiltinPcHostConfig.DerivePinKey(_pin);
+        _sessionKey = BuiltinPcHostConfig.DeriveSessionKey(_pinKey);
 
         EnsureFirewallRule(_listenPort);
 
+        string[] zt = CollectAdapterIps("ZeroTier");
+        string[] ts = CollectAdapterIps("Tailscale");
+        string preferred = zt.FirstOrDefault() ?? ts.FirstOrDefault() ?? BuiltinPcHostConfig.DefaultHost();
+
         Console.WriteLine("HEART & SOUL — WORLD HOST");
         Console.WriteLine("=========================");
-        Console.WriteLine("Mode:     ZeroTier direct TCP (no MQTT / no TURN / no relay)");
-        Console.WriteLine("Listen:   TCP *:" + _listenPort);
-        Console.WriteLine("Protocol: v" + ProtocolVersion);
+        Console.WriteLine("Mode:        ZeroTier/Tailscale direct TCP (no MQTT / TURN / UPnP)");
+        Console.WriteLine("ROOM PIN:    " + _pin);
+        Console.WriteLine("Listen:      TCP *:" + _listenPort + " (all interfaces)");
+        Console.WriteLine("ZeroTier:   " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — is ZeroTier running?)"));
+        Console.WriteLine("Tailscale:  " + (ts.Length > 0 ? string.Join(", ", ts) : "(not detected)"));
+        Console.WriteLine("Phones use: " + preferred + ":" + _listenPort);
+        Console.WriteLine("Protocol:   v" + ProtocolVersion);
         Console.WriteLine();
-        Console.WriteLine("Phones: Co-op → Join PC Host (one tap).");
-        Console.WriteLine("Both phones and this PC must be on the same ZeroTier network.");
+        Console.WriteLine("Phones: Co-op → Join PC Host → enter this PIN.");
+        Console.WriteLine("Host address on phones defaults to " + BuiltinPcHostConfig.DefaultHost() + ":" + _listenPort + " (advanced field).");
+        Console.WriteLine("PIN file: " + configPath + "  (--new-pin to rotate)");
         Console.WriteLine("Press Ctrl+C to stop.");
         Console.WriteLine();
 
@@ -85,22 +129,84 @@ internal static class Program
         Console.WriteLine("World host stopped.");
     }
 
-    private static void EnsureFirewallRule(int port)
+    private static string[] CollectAdapterIps(string needle)
     {
+        var list = new List<string>();
         try
         {
-            string name = "HeartSoulWorldHost TCP " + port;
-            // Remove any prior rule with the same name, then add inbound allow.
-            RunNetsh($"advfirewall firewall delete rule name=\"{name}\"");
-            int code = RunNetsh(
-                $"advfirewall firewall add rule name=\"{name}\" dir=in action=allow protocol=TCP localport={port} profile=any");
-            Console.WriteLine(code == 0
-                ? "[firewall] Inbound TCP " + port + " allowed."
-                : "[firewall] Could not add rule (run as Administrator if phones cannot connect).");
+            foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != OperationalStatus.Up)
+                    continue;
+                string label = nic.Name + " " + nic.Description;
+                if (label.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+                foreach (UnicastIPAddressInformation uni in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (uni.Address.AddressFamily != AddressFamily.InterNetwork)
+                        continue;
+                    if (IPAddress.IsLoopback(uni.Address))
+                        continue;
+                    list.Add(uni.Address.ToString());
+                }
+            }
+        }
+        catch { }
+        return list.Distinct().ToArray();
+    }
+
+    private static void EnsureFirewallRule(int port)
+    {
+        if (AddFirewallRule(port))
+        {
+            Console.WriteLine("[firewall] Inbound TCP " + port + " allowed.");
+            return;
+        }
+
+        Console.WriteLine("[firewall] Need Administrator once to open TCP " + port + ".");
+        Console.WriteLine("[firewall] Approve the Windows UAC prompt if it appears…");
+        try
+        {
+            string? exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe))
+                exe = "HeartSoulWorldHost.exe";
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = "--add-firewall " + port,
+                UseShellExecute = true,
+                Verb = "runas"
+            };
+            using Process? elevated = Process.Start(psi);
+            if (elevated == null)
+            {
+                Console.WriteLine("[firewall] UAC cancelled. Add an inbound allow for TCP " + port + " manually.");
+                return;
+            }
+            elevated.WaitForExit(20000);
+            Console.WriteLine(elevated.ExitCode == 0
+                ? "[firewall] Inbound TCP " + port + " allowed (elevated)."
+                : "[firewall] Elevated add failed. Allow TCP " + port + " in Windows Firewall manually.");
         }
         catch (Exception ex)
         {
             Console.WriteLine("[firewall] " + ex.Message);
+            Console.WriteLine("[firewall] Allow TCP " + port + " inbound in Windows Defender Firewall if phones cannot connect.");
+        }
+    }
+
+    private static bool AddFirewallRule(int port)
+    {
+        try
+        {
+            string name = "HeartSoulWorldHost TCP " + port;
+            RunNetsh($"advfirewall firewall delete rule name=\"{name}\"");
+            return RunNetsh(
+                $"advfirewall firewall add rule name=\"{name}\" dir=in action=allow protocol=TCP localport={port} profile=any") == 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -128,7 +234,7 @@ internal static class Program
         {
             listener = new TcpListener(IPAddress.Any, _listenPort);
             listener.Start();
-            Console.WriteLine("[tcp] Listening.");
+            Console.WriteLine("[tcp] Listening on all interfaces, port " + _listenPort + ".");
             while (!token.IsCancellationRequested)
             {
                 TcpClient client = await listener.AcceptTcpClientAsync(token);
@@ -151,7 +257,6 @@ internal static class Program
             tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
             NetworkStream stream = tcp.GetStream();
             ownedStream = stream;
-            // Byte-at-a-time so we never buffer past the HELLO line into frame data.
             string? line = await ReadLineExact(stream, token);
             if (line == null || !line.StartsWith("HELLO ", StringComparison.Ordinal))
                 return;
@@ -163,7 +268,7 @@ internal static class Program
             if (clientId.Length is < 8 or > 64
                 || clientId.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-'))
                 return;
-            if (!FixedEquals(BuiltinPcHostConfig.HelloProof(clientId), proof))
+            if (!FixedEquals(BuiltinPcHostConfig.HelloProof(_pinKey, clientId), proof))
                 return;
 
             await Gate.WaitAsync(token);
@@ -173,8 +278,7 @@ internal static class Program
                 {
                     if (Clients.Count >= 2)
                     {
-                        byte[] full = Encoding.UTF8.GetBytes("FULL\n");
-                        await stream.WriteAsync(full, token);
+                        await stream.WriteAsync(Encoding.UTF8.GetBytes("FULL\n"), token);
                         return;
                     }
                     slot = new ClientSlot
@@ -182,7 +286,7 @@ internal static class Program
                         Id = clientId,
                         LastSeenUtc = DateTime.UtcNow,
                         Connected = true,
-                        Role = Clients.Count // first = 0, second = 1
+                        Role = Clients.Count
                     };
                     Clients[clientId] = slot;
                     Console.WriteLine($"[player] {Short(clientId)} joined ({Clients.Count}/2).");
