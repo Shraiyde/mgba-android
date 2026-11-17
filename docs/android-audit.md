@@ -13,9 +13,9 @@ Companion ROM classification: [`pokehns-expansion` `docs/coop-flag-audit.md`](ht
 
 The Android stack is **feature-complete for two-phone co-op**: 6-digit PIN
 pairing, WebRTC Direct + MQTT relay, optional user TURN, AES-GCM frames,
-mailbox v11 (position / flags / vars / config / ready / resync), SIO link
-cable, Documents saves, portrait+landscape touch overlay, and audio/frame
-pacing ownership off audio sync.
+mailbox v12 (position + on-change follower / flags / vars / config / ready /
+resync), SIO link cable, Documents saves, portrait+landscape touch overlay,
+and audio/frame pacing ownership off audio sync.
 
 Remaining: optional TURN **infra** (user must supply a TURN URI; none is
 bundled), and very low-priority polish.
@@ -27,16 +27,19 @@ bundled), and very low-priority polish.
 | Constant | Value | Both sides |
 | --- | --- | --- |
 | `HNS_COOP_MAILBOX_MAGIC` | `0x504F4F43` | ROM + Android |
-| `HNS_COOP_MAILBOX_VERSION` | **11** | ROM + Android |
-| `HNS_COOP_MAILBOX_SIZE` | 2284 | ROM + Android |
+| `HNS_COOP_MAILBOX_VERSION` | **12** | ROM + Android |
+| `HNS_COOP_MAILBOX_SIZE` | 2292 | ROM + Android |
+| `localFollower` / `remoteFollower` | 2284 / 2288 | ROM publishes local; Android copies peer → remote |
 | Flag / var queues | 128 / 128 | ROM + Android |
 | Peer frame `PEER_VERSION` | 1 | Android peer link |
 | Wire message IDs | POSITION=16 … WORLD_RESYNC=30 | Android; ROM via mailbox words |
 
-ROM build **hns-coop-125+** and APK builds from this audit closeout share
-mailbox **v11**. PIN length is an Android MQTT/WebRTC pairing concern only
-(not in the GBA mailbox). Old 4-digit saved sessions must re-pair with a new
-6-digit PIN.
+Mailbox **v12** appends follower packing after `remoteConfigBlob` (bit31
+visible + bits0–15 graphicsId). POSITION stays 6 words steady-state; a 7th
+word carries follower only on change. ROM build **hns-coop** on mailbox v12
+and matching APKs share this layout. PIN length is an Android MQTT/WebRTC
+pairing concern only (not in the GBA mailbox). Old 4-digit saved sessions
+must re-pair with a new 6-digit PIN.
 
 ---
 
@@ -46,7 +49,7 @@ mailbox **v11**. PIN length is an Android MQTT/WebRTC pairing concern only
 | --- | --- |
 | Direct WebRTC / Relay MQTT, PIN, reconnect, Direct retry | Solid; optional TURN field (default off) |
 | Mailbox I/O | Replace-same-id on full ring + WORLD_RESYNC request |
-| Avatar / presence | Solid; resume re-sync |
+| Avatar / presence | Solid; resume re-sync; v12 partner follower on-change |
 | Battle disconnect | SIO + ROM abort; no separate BATTLE_* opcodes |
 | Saves outside the app | Documents + periodic re-prompt |
 | Touch controls | Stick clamp + hide-toggle off R |
