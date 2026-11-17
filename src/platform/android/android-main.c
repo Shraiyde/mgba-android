@@ -108,8 +108,8 @@ static void mAndroidMigrateSavesToPublic(const char* romPath) {
 }
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 12
-#define HNS_COOP_MAILBOX_SIZE 2292
+#define HNS_COOP_MAILBOX_VERSION 13
+#define HNS_COOP_MAILBOX_SIZE 2296
 #define HNS_COOP_CONFIG_BLOB_SIZE 44
 #define HNS_COOP_CONFIG_PAYLOAD_WORDS 12
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
@@ -127,9 +127,11 @@ static void mAndroidMigrateSavesToPublic(const char* romPath) {
 #define HNS_COOP_OFF_PEER_LINK_READY 2192
 #define HNS_COOP_OFF_LOCAL_CONFIG 2196
 #define HNS_COOP_OFF_REMOTE_CONFIG 2240
-/* v12: appended after remoteConfigBlob — do not shift earlier offsets. */
+/* v12+: appended after remoteConfigBlob — do not shift earlier offsets. */
 #define HNS_COOP_OFF_LOCAL_FOLLOWER 2284
 #define HNS_COOP_OFF_REMOTE_FOLLOWER 2288
+/* v13: ROM bumps this on return-to-field / warp so we force POSITION exchange. */
+#define HNS_COOP_OFF_LOCAL_PRESENCE_RESYNC 2292
 #define GBA_EWRAM_START 0x02000000
 #define GBA_EWRAM_END 0x02040000
 
@@ -142,6 +144,7 @@ static uint32_t sCoopLastYSent = UINT32_MAX;
 static uint32_t sCoopLastGenderSent = UINT32_MAX;
 static uint32_t sCoopLastFacingSent = UINT32_MAX;
 static uint32_t sCoopLastFollowerSent = UINT32_MAX;
+static uint32_t sCoopLastPresenceResync = 0;
 static uint32_t sCoopLastPosFrame = 0;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
 static uint32_t sCoopLastConfigSequence = UINT32_MAX;
@@ -497,6 +500,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			sCoopLastGenderSent = UINT32_MAX;
 			sCoopLastFacingSent = UINT32_MAX;
 			sCoopLastFollowerSent = UINT32_MAX;
+			sCoopLastPresenceResync = 0;
 			sCoopLastPosFrame = 0;
 			sCoopResyncBoostFrames = 0;
 			core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 0);
@@ -504,6 +508,23 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 		}
 
 		if (connected) {
+			/* ROM bumps localPresenceResync on return-to-field / warp. Force our
+			 * POSITION publish and ask the peer to republish theirs. */
+			uint32_t presenceResync = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_PRESENCE_RESYNC);
+			if (presenceResync != 0 && presenceResync != sCoopLastPresenceResync) {
+				sCoopLastPresenceResync = presenceResync;
+				sCoopLastMapSent = UINT32_MAX;
+				sCoopLastSioActive = UINT32_MAX;
+				sCoopLastXSent = UINT32_MAX;
+				sCoopLastYSent = UINT32_MAX;
+				sCoopLastGenderSent = UINT32_MAX;
+				sCoopLastFacingSent = UINT32_MAX;
+				sCoopLastFollowerSent = UINT32_MAX;
+				{
+					uint32_t one = htonl(1);
+					mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION_RESYNC, &one, sizeof(one));
+				}
+			}
             if (sCoopHostRole) {
                 uint32_t configReady = core->busRead32(core, sCoopMailboxAddress + 2140);
                 if (configReady && (configReady != sCoopLastConfigSequence
@@ -693,6 +714,15 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					core->busWrite32(core, sCoopMailboxAddress + 2100, 1);
 				} else if (peerEvent.messageType == mPEER_MSG_WORLD_RESYNC) {
 					mAndroidPeerLinkRequestStoryResync();
+				} else if (peerEvent.messageType == mPEER_MSG_POSITION_RESYNC) {
+					/* Peer returned to the field — republish authoritative coords. */
+					sCoopLastMapSent = UINT32_MAX;
+					sCoopLastSioActive = UINT32_MAX;
+					sCoopLastXSent = UINT32_MAX;
+					sCoopLastYSent = UINT32_MAX;
+					sCoopLastGenderSent = UINT32_MAX;
+					sCoopLastFacingSent = UINT32_MAX;
+					sCoopLastFollowerSent = UINT32_MAX;
 				} else if (peerEvent.messageType == mPEER_MSG_POSITION) {
 					core->busWrite32(core, sCoopMailboxAddress + 2108, packed);
 					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);

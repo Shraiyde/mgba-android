@@ -25,7 +25,9 @@ enum mPeerMessageType {
 	mPEER_MSG_SIO_RESYNC = 28,
 	mPEER_MSG_WORLD_CONFIG_BLOB = 29,
 	/* Peer asks the other side to requeue shared story flags/vars. */
-	mPEER_MSG_WORLD_RESYNC = 30
+	mPEER_MSG_WORLD_RESYNC = 30,
+	/* Peer should force-publish a fresh POSITION (presence after field return). */
+	mPEER_MSG_POSITION_RESYNC = 31
 };
 
 /* While the transport is connected, an unanswered SIO word is held until the

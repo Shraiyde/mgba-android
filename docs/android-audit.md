@@ -27,17 +27,17 @@ pairing only asks for the 6-digit PIN / companion code.
 | Constant | Value | Both sides |
 | --- | --- | --- |
 | `HNS_COOP_MAILBOX_MAGIC` | `0x504F4F43` | ROM + Android |
-| `HNS_COOP_MAILBOX_VERSION` | **12** | ROM + Android |
-| `HNS_COOP_MAILBOX_SIZE` | 2292 | ROM + Android |
+| `HNS_COOP_MAILBOX_VERSION` | **13** | ROM + Android |
+| `HNS_COOP_MAILBOX_SIZE` | 2296 | ROM + Android |
 | `localFollower` / `remoteFollower` | 2284 / 2288 | ROM publishes local; Android copies peer → remote |
+| `localPresenceResync` | 2292 | ROM bumps on field return; Android forces POSITION + asks peer |
 | Flag / var queues | 128 / 128 | ROM + Android |
 | Peer frame `PEER_VERSION` | 1 | Android peer link |
 | Wire message IDs | POSITION=16 … WORLD_RESYNC=30 | Android; ROM via mailbox words |
 
-Mailbox **v12** appends follower packing after `remoteConfigBlob` (bit31
-visible + bits0–15 graphicsId). POSITION stays 6 words steady-state; a 7th
-word carries follower only on change. ROM build **hns-coop** on mailbox v12
-and matching APKs share this layout. PIN length is an Android MQTT/WebRTC
+Mailbox **v13** keeps v12 follower packing and adds `localPresenceResync`
+@2292 so field return (battle/menu/warp) forces a mutual POSITION refresh.
+POSITION stays 6 words steady-state; a 7th word carries follower only on change. PIN length is an Android MQTT/WebRTC
 pairing concern only (not in the GBA mailbox). Old 4-digit saved sessions
 must re-pair with a new 6-digit PIN.
 
