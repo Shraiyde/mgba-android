@@ -936,6 +936,71 @@ public final class PeerLinkManager {
         }
     }
 
+    /** Shared room AES key from the PC world host (Base64) or local HMAC fallback. */
+    private void applyWorldHostSessionKey(String sessionKeyB64) throws Exception {
+        if (sessionKeyB64 != null && sessionKeyB64.length() > 0) {
+            byte[] decoded = Base64.decode(sessionKeyB64, Base64.DEFAULT);
+            if (decoded != null && decoded.length >= 16) {
+                sessionKey = decoded;
+                return;
+            }
+        }
+        if (pinKey == null || sessionId == null)
+            return;
+        // Must match HeartSoulWorldHost DeriveSessionKey.
+        sessionKey = hmac(pinKey, (sessionId + "|HNS-WORLD-HOST-V1").getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * WebRTC signaling from the PC world host on signal/{client}/down.
+     * Payload shape matches {@link #sendSignal} for pcServerMode (sdp / candidate fields),
+     * not the phone-to-phone mac-wrapped envelope.
+     */
+    private void handleWorldHostSignal(JSONObject signal) throws Exception {
+        if (!pcServerMode || sessionKey == null)
+            return;
+        String type = signal.optString("type");
+        if ("answer".equals(type)) {
+            String sdp = signal.optString("sdp");
+            if (peerConnection == null || sdp.isEmpty())
+                return;
+            SessionDescription answer = new SessionDescription(SessionDescription.Type.ANSWER, sdp);
+            peerConnection.setRemoteDescription(new SimpleSdpObserver() {
+                @Override public void onSetSuccess() {
+                    flushPendingCandidates();
+                }
+            }, answer);
+        } else if ("offer".equals(type)) {
+            // Host-initiated re-offer after ICE restart; phone answers.
+            String sdp = signal.optString("sdp");
+            if (sdp.isEmpty())
+                return;
+            if (peerConnection == null)
+                createPeerConnection(false);
+            if (peerConnection == null)
+                return;
+            SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, sdp);
+            peerConnection.setRemoteDescription(new SimpleSdpObserver() {
+                @Override public void onSetSuccess() {
+                    flushPendingCandidates();
+                    createAnswer();
+                }
+            }, offer);
+        } else if ("ice".equals(type)) {
+            String candidate = signal.optString("candidate");
+            if (candidate.isEmpty())
+                return;
+            IceCandidate ice = new IceCandidate(
+                signal.optString("sdpMid", "0"),
+                signal.optInt("sdpMLineIndex", 0),
+                candidate);
+            if (peerConnection != null && peerConnection.getRemoteDescription() != null)
+                peerConnection.addIceCandidate(ice);
+            else
+                pendingCandidates.add(ice);
+        }
+    }
+
     private void handleRoomAdvertisement(JSONObject advert) throws Exception {
         if (!"room".equals(advert.optString("type")))
             return;
