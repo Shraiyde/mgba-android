@@ -84,6 +84,8 @@ public final class PeerLinkManager {
     private static final int MAX_PEER_FRAME_SIZE = 16 + 4096;
     private static final int MAX_ENCRYPTED_FRAME_SIZE = 12 + MAX_PEER_FRAME_SIZE + 16;
     private static final int MAX_MQTT_PAYLOAD_SIZE = 16 * 1024;
+    /** Wait long enough for TURN allocate over 443/TCP before falling back to MQTT Relay. */
+    private static final int DIRECT_TIMEOUT_MS = 15000;
 
     private static volatile Activity activity;
     private static volatile Context appContext;
@@ -156,12 +158,12 @@ public final class PeerLinkManager {
         @Override public void run() {
             if (!accepted || sessionKey == null || directConnected)
                 return;
-            showStatus("Relay",
-                "Retrying Direct phone-to-phone… relay carries game data until Direct returns.");
             try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
             try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
             peerConnection = null;
             dataChannel = null;
+            directViaTurn = false;
+            pendingCandidates.clear();
             beginDirectLink(host);
         }
     };
@@ -373,16 +375,23 @@ public final class PeerLinkManager {
         servers.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
         servers.add(PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer());
         servers.add(PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer());
-        /* Built-in Metered ICE only — no user TURN prefs. */
-        String builtinUser = BuiltinTurnConfig.username();
-        String builtinPass = BuiltinTurnConfig.credential();
+        /* Built-in Metered ICE: one STUN entry + one TURN IceServer covering all
+         * turn/turns URLs with shared username/credential (WebRTC-preferred form). */
+        List<String> stunUrls = new ArrayList<>();
+        List<String> turnUrls = new ArrayList<>();
         for (String url : BuiltinTurnConfig.URLS) {
-            PeerConnection.IceServer.Builder b = PeerConnection.IceServer.builder(url);
-            if (url.startsWith("turn:") || url.startsWith("turns:")) {
-                b.setUsername(builtinUser);
-                b.setPassword(builtinPass);
-            }
-            servers.add(b.createIceServer());
+            if (url.startsWith("turn:") || url.startsWith("turns:"))
+                turnUrls.add(url);
+            else
+                stunUrls.add(url);
+        }
+        if (!stunUrls.isEmpty())
+            servers.add(PeerConnection.IceServer.builder(stunUrls).createIceServer());
+        if (!turnUrls.isEmpty()) {
+            servers.add(PeerConnection.IceServer.builder(turnUrls)
+                .setUsername(BuiltinTurnConfig.username())
+                .setPassword(BuiltinTurnConfig.credential())
+                .createIceServer());
         }
         return servers;
     }
@@ -1057,6 +1066,11 @@ public final class PeerLinkManager {
             List<PeerConnection.IceServer> iceServers = buildIceServers();
             PeerConnection.RTCConfiguration config = new PeerConnection.RTCConfiguration(iceServers);
             config.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
+            /* ALL keeps host/srflx and relay; never restrict away from TURN. */
+            config.iceTransportsType = PeerConnection.IceTransportsType.ALL;
+            config.continualGatheringPolicy =
+                PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY;
+            config.iceCandidatePoolSize = 2;
             peerConnection = factory.createPeerConnection(config, new PeerConnection.Observer() {
                 @Override public void onSignalingChange(PeerConnection.SignalingState state) {}
                 @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
@@ -1142,9 +1156,10 @@ public final class PeerLinkManager {
         subscribe(signalInTopic());
         handler.removeCallbacks(directTimeout);
         handler.removeCallbacks(directRetry);
-        handler.postDelayed(directTimeout, 12000);
-        showStatus("Relay",
-            "Paired. Trying direct phone-to-phone… relay active until Direct connects.");
+        directViaTurn = false;
+        handler.postDelayed(directTimeout, DIRECT_TIMEOUT_MS);
+        showStatus("Trying Direct (built-in TURN ready)",
+            "Phone-to-phone WebRTC with Metered TURN; MQTT relay is backup until Direct connects.");
         createPeerConnection(offerer);
     }
 
