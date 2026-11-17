@@ -9,6 +9,7 @@ import android.content.SharedPreferences;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.util.Base64;
+import android.util.Log;
 import android.view.Gravity;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -69,6 +70,8 @@ import javax.crypto.spec.SecretKeySpec;
  * MQTT carries only short-lived signaling and encrypted fallback frames.
  */
 public final class PeerLinkManager {
+    /** Filter: adb logcat -s HnsCoop — status / ICE / presence for phone reports. */
+    private static final String COOP_LOG = "HnsCoop";
     private static final String BROKER = "wss://broker.emqx.io:8084/mqtt";
     private static final String PREFS = "hns_peer_link";
     private static final String PREF_ROLE = "role";
@@ -1648,6 +1651,12 @@ public final class PeerLinkManager {
     }
 
     private void showStatus(String title, String message) {
+        Log.i(COOP_LOG, title + ": " + message
+            + " pcHost=" + pcServerMode
+            + " direct=" + directConnected
+            + " turn=" + directViaTurn
+            + " accepted=" + accepted
+            + " session=" + (sessionId != null ? sessionId : "-"));
         Activity current = activity;
         if (current == null)
             return;
@@ -1657,6 +1666,7 @@ public final class PeerLinkManager {
     }
 
     private void showMessage(String message) {
+        Log.i(COOP_LOG, "msg: " + message);
         Activity current = activity;
         if (current != null)
             current.runOnUiThread(() ->

@@ -520,6 +520,8 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				sCoopLastGenderSent = UINT32_MAX;
 				sCoopLastFacingSent = UINT32_MAX;
 				sCoopLastFollowerSent = UINT32_MAX;
+				SDL_Log("HnsCoop presence-resync bump=%u — forcing POSITION exchange",
+					(unsigned) presenceResync);
 				{
 					uint32_t one = htonl(1);
 					mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION_RESYNC, &one, sizeof(one));
