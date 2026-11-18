@@ -302,7 +302,7 @@ static void _processPayload(struct mPeerLink* link, uint16_t type, const uint8_t
 		return;
 	}
 	{
-		/* v9+ POSITION is 4 or 6 words; sioActive is always word 1. */
+		/* POSITION is 4–8 words (v14 adds follower + avatarState); sioActive is word 1. */
 		if (type == mPEER_MSG_POSITION && size >= 2 * sizeof(uint32_t)) {
 			uint32_t networkSioActive;
 			memcpy(&networkSioActive, payload + sizeof(uint32_t), sizeof(networkSioActive));

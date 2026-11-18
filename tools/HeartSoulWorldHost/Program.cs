@@ -20,15 +20,17 @@ internal sealed class ClientSlot
     public bool Connected { get; set; }
     public NetworkStream? Stream { get; set; }
     public readonly object StreamLock = new();
-    public uint[] LastPosition { get; set; } = new uint[7];
+    public uint[] LastPosition { get; set; } = new uint[8];
     public int PositionWords { get; set; }
     public bool HasPosition { get; set; }
+    public bool HasClaimSeq { get; set; }
+    public byte LastClaimSeq { get; set; }
     public int Role { get; set; } = -1;
 }
 
 internal static class Program
 {
-    private const int ProtocolVersion = 7;
+    private const int ProtocolVersion = 8;
     private const uint PeerMagic = 0x4D504C4Bu;
     private const ushort PeerVersion = 1;
     private const int HostSenderId = 2;
@@ -270,6 +272,9 @@ internal static class Program
                     }
                     slot.LastSeenUtc = DateTime.UtcNow;
                     slot.Connected = true;
+                    // Soft resume may restart claimSeq at the phone; accept the
+                    // next claim instead of treating it as a late duplicate.
+                    slot.HasClaimSeq = false;
                     Console.WriteLine($"[player] {Short(clientId)} resumed (replaced stale socket).");
                 }
             }
@@ -344,9 +349,29 @@ internal static class Program
         if (type == MsgPosition)
         {
             if (payload.Length < 16) return;
-            int words = Math.Min(payload.Length / 4, 7);
+            int words = Math.Min(payload.Length / 4, 8);
+            uint[] claim = new uint[8];
             for (int i = 0; i < words; i++)
-                sender.LastPosition[i] = BinaryPrimitives.ReadUInt32BigEndian(payload.AsSpan(i * 4, 4));
+                claim[i] = BinaryPrimitives.ReadUInt32BigEndian(payload.AsSpan(i * 4, 4));
+
+            // Claim seq lives in the high byte of avatarState (word 7). Drop
+            // exact duplicates and late wraps so a soft resume cannot replay
+            // stale locomotion into the partner phone.
+            if (words >= 8)
+            {
+                byte claimSeq = (byte)(claim[7] >> 24);
+                if (sender.HasClaimSeq)
+                {
+                    byte delta = (byte)(claimSeq - sender.LastClaimSeq);
+                    if (delta == 0 || delta >= 128)
+                        return;
+                }
+                sender.LastClaimSeq = claimSeq;
+                sender.HasClaimSeq = true;
+            }
+
+            for (int i = 0; i < words; i++)
+                sender.LastPosition[i] = claim[i];
             sender.PositionWords = Math.Max(words, 4);
             sender.HasPosition = true;
             if (peer == null) return;
@@ -366,7 +391,7 @@ internal static class Program
     private static async Task StreamPositionTo(ClientSlot dest, ClientSlot source)
     {
         if (!source.HasPosition) return;
-        int words = Math.Clamp(source.PositionWords, 4, 7);
+        int words = Math.Clamp(source.PositionWords, 4, 8);
         byte[] payload = new byte[words * 4];
         for (int i = 0; i < words; i++)
             BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(i * 4, 4), source.LastPosition[i]);

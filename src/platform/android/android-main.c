@@ -108,8 +108,8 @@ static void mAndroidMigrateSavesToPublic(const char* romPath) {
 }
 
 #define HNS_COOP_MAILBOX_MAGIC 0x504F4F43
-#define HNS_COOP_MAILBOX_VERSION 13
-#define HNS_COOP_MAILBOX_SIZE 2296
+#define HNS_COOP_MAILBOX_VERSION 14
+#define HNS_COOP_MAILBOX_SIZE 2304
 #define HNS_COOP_CONFIG_BLOB_SIZE 44
 #define HNS_COOP_CONFIG_PAYLOAD_WORDS 12
 #define HNS_COOP_FLAG_QUEUE_SIZE 128
@@ -132,6 +132,9 @@ static void mAndroidMigrateSavesToPublic(const char* romPath) {
 #define HNS_COOP_OFF_REMOTE_FOLLOWER 2288
 /* v13: ROM bumps this on return-to-field / warp so we force POSITION exchange. */
 #define HNS_COOP_OFF_LOCAL_PRESENCE_RESYNC 2292
+/* v14: action|avatarState|doorPhase|claimSeq for HeldMovement partner replay. */
+#define HNS_COOP_OFF_LOCAL_AVATAR_STATE 2296
+#define HNS_COOP_OFF_REMOTE_AVATAR_STATE 2300
 #define GBA_EWRAM_START 0x02000000
 #define GBA_EWRAM_END 0x02040000
 
@@ -144,6 +147,7 @@ static uint32_t sCoopLastYSent = UINT32_MAX;
 static uint32_t sCoopLastGenderSent = UINT32_MAX;
 static uint32_t sCoopLastFacingSent = UINT32_MAX;
 static uint32_t sCoopLastFollowerSent = UINT32_MAX;
+static uint32_t sCoopLastAvatarStateSent = UINT32_MAX;
 static uint32_t sCoopLastPresenceResync = 0;
 static uint32_t sCoopLastPosFrame = 0;
 static uint32_t sCoopLastConfigFrame = UINT32_MAX;
@@ -320,6 +324,7 @@ void mAndroidPeerLinkRequestStoryResync(void) {
 	sCoopLastGenderSent = UINT32_MAX;
 	sCoopLastFacingSent = UINT32_MAX;
 	sCoopLastFollowerSent = UINT32_MAX;
+	sCoopLastAvatarStateSent = UINT32_MAX;
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopResyncBoostFrames = 180;
 	atomic_store(&sCoopPendingReconnectReset, true);
@@ -484,6 +489,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 0);
 			core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_REMOTE_FOLLOWER, 0);
 			sCoopLastFollowerSent = UINT32_MAX;
+			sCoopLastAvatarStateSent = UINT32_MAX;
 		}
 		if (!connected) {
 			core->busWrite32(core, sCoopMailboxAddress + 2112, 0);
@@ -500,6 +506,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			sCoopLastGenderSent = UINT32_MAX;
 			sCoopLastFacingSent = UINT32_MAX;
 			sCoopLastFollowerSent = UINT32_MAX;
+			sCoopLastAvatarStateSent = UINT32_MAX;
 			sCoopLastPresenceResync = 0;
 			sCoopLastPosFrame = 0;
 			sCoopResyncBoostFrames = 0;
@@ -520,6 +527,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				sCoopLastGenderSent = UINT32_MAX;
 				sCoopLastFacingSent = UINT32_MAX;
 				sCoopLastFollowerSent = UINT32_MAX;
+				sCoopLastAvatarStateSent = UINT32_MAX;
 				{
 					uint32_t one = htonl(1);
 					mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION_RESYNC, &one, sizeof(one));
@@ -550,6 +558,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			uint32_t localGender = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_GENDER);
 			uint32_t localFacing = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_FACING);
 			uint32_t localFollower = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_FOLLOWER);
+			uint32_t localAvatarState = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_LOCAL_AVATAR_STATE);
 			/* The initial GBA link handshake must run before gameReady can be
 			 * published. Treat the connected pre-handshake session as SIO-active;
 			 * once the handshake completes, honor the ROM's map/battle activity bit. */
@@ -558,26 +567,25 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 				mPeerLinkSetLocalSioActive(sPeerLink, sioActive != 0);
 			/* Send on change immediately; otherwise every 4 frames. Full every-
 			 * frame publish flooded the P2P queue and made DiscardOldest drop
-			 * SIO battle words under movement traffic. Follower is a 7th word
-			 * only when it changed (keeps steady-state POSITION at 6 words). */
+			 * SIO battle words under movement traffic. v14 always sends 8 words:
+			 * map/sio/x/y/gender/facing/follower/avatarState (claim seq in high byte). */
 			bool followerChanged = localFollower != sCoopLastFollowerSent;
+			bool avatarChanged = localAvatarState != sCoopLastAvatarStateSent;
 			if (localMapId != sCoopLastMapSent || sioActive != sCoopLastSioActive
 				|| localX != sCoopLastXSent || localY != sCoopLastYSent
 				|| localGender != sCoopLastGenderSent || localFacing != sCoopLastFacingSent
-				|| followerChanged
+				|| followerChanged || avatarChanged
 				|| (frame % 4) == 0) {
-				uint32_t networkState[7];
-				size_t stateBytes = 6 * sizeof(uint32_t);
+				uint32_t networkState[8];
+				size_t stateBytes = 8 * sizeof(uint32_t);
 				networkState[0] = htonl(localMapId);
 				networkState[1] = htonl(sioActive);
 				networkState[2] = htonl(localX);
 				networkState[3] = htonl(localY);
 				networkState[4] = htonl(localGender);
 				networkState[5] = htonl(localFacing);
-				if (followerChanged || sCoopLastFollowerSent == UINT32_MAX) {
-					networkState[6] = htonl(localFollower);
-					stateBytes = 7 * sizeof(uint32_t);
-				}
+				networkState[6] = htonl(localFollower);
+				networkState[7] = htonl(localAvatarState);
 				if (mPeerLinkSend(sPeerLink, mPEER_MSG_POSITION, networkState, stateBytes)) {
 					sCoopLastMapSent = localMapId;
 					sCoopLastSioActive = sioActive;
@@ -585,8 +593,8 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					sCoopLastYSent = localY;
 					sCoopLastGenderSent = localGender;
 					sCoopLastFacingSent = localFacing;
-					if (stateBytes == 7 * sizeof(uint32_t))
-						sCoopLastFollowerSent = localFollower;
+					sCoopLastFollowerSent = localFollower;
+					sCoopLastAvatarStateSent = localAvatarState;
 				}
 			}
 
@@ -658,7 +666,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
                     continue;
                 }
 				if (peerEvent.messageType == mPEER_MSG_POSITION && peerEvent.size >= 4 * sizeof(uint32_t)) {
-					uint32_t networkState[7] = { 0, 0, 0, 0, 0, 0, 0 };
+					uint32_t networkState[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 					uint32_t wasPresent = core->busRead32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY);
 					memcpy(networkState, peerEvent.data, peerEvent.size > sizeof(networkState) ? sizeof(networkState) : peerEvent.size);
 					core->busWrite32(core, sCoopMailboxAddress + 2108, ntohl(networkState[0]));
@@ -674,6 +682,9 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					 * (movement-only POSITION stays 6 words). */
 					if (peerEvent.size >= 7 * sizeof(uint32_t))
 						core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_REMOTE_FOLLOWER, ntohl(networkState[6]));
+					/* 8th word: avatar locomotion / door / claim seq (mailbox v14). */
+					if (peerEvent.size >= 8 * sizeof(uint32_t))
+						core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_REMOTE_AVATAR_STATE, ntohl(networkState[7]));
 					core->busWrite32(core, sCoopMailboxAddress + HNS_COOP_OFF_PEER_LINK_READY, 1);
 					sCoopLastPosFrame = frame;
 					/* Peer returned after absence: force an immediate local
@@ -687,6 +698,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 						sCoopLastGenderSent = UINT32_MAX;
 						sCoopLastFacingSent = UINT32_MAX;
 						sCoopLastFollowerSent = UINT32_MAX;
+						sCoopLastAvatarStateSent = UINT32_MAX;
 						sCoopLastConfigFrame = UINT32_MAX;
 						sCoopResyncBoostFrames = 180;
 						core->busWrite32(core, sCoopMailboxAddress + 2100, 0);
@@ -723,6 +735,7 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 					sCoopLastGenderSent = UINT32_MAX;
 					sCoopLastFacingSent = UINT32_MAX;
 					sCoopLastFollowerSent = UINT32_MAX;
+					sCoopLastAvatarStateSent = UINT32_MAX;
 				} else if (peerEvent.messageType == mPEER_MSG_POSITION) {
 					core->busWrite32(core, sCoopMailboxAddress + 2108, packed);
 					core->busWrite32(core, sCoopMailboxAddress + 2112, 1);
@@ -773,6 +786,7 @@ static void mSDLAndroidApplyPendingPeerState(void) {
 	sCoopLastGenderSent = UINT32_MAX;
 	sCoopLastFacingSent = UINT32_MAX;
 	sCoopLastFollowerSent = UINT32_MAX;
+	sCoopLastAvatarStateSent = UINT32_MAX;
 	sCoopLastPosFrame = 0;
 	sCoopLastConfigFrame = UINT32_MAX;
 	sCoopLastConfigSequence = UINT32_MAX;
@@ -1348,6 +1362,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	sCoopLastGenderSent = UINT32_MAX;
 	sCoopLastFacingSent = UINT32_MAX;
 	sCoopLastFollowerSent = UINT32_MAX;
+	sCoopLastAvatarStateSent = UINT32_MAX;
 	sCoopLastPosFrame = 0;
 
 	// No ROM is a normal startup state. Keep SDL, the renderer, touch controls,
