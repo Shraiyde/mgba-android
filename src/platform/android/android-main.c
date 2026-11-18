@@ -570,7 +570,10 @@ static void mSDLAndroidUpdateCoopMailbox(struct mCore* core) {
 			 * SIO battle words under movement traffic. v14 always sends 8 words:
 			 * map/sio/x/y/gender/facing/follower/avatarState (claim seq in high byte). */
 			bool followerChanged = localFollower != sCoopLastFollowerSent;
-			bool avatarChanged = localAvatarState != sCoopLastAvatarStateSent;
+			/* Ignore claimSeq (high byte): ROM bumps it every publish, which
+			 * would otherwise force a POSITION every frame and defeat the
+			 * every-4-frames flood control. */
+			bool avatarChanged = (localAvatarState & 0x00FFFFFFu) != (sCoopLastAvatarStateSent & 0x00FFFFFFu);
 			if (localMapId != sCoopLastMapSent || sioActive != sCoopLastSioActive
 				|| localX != sCoopLastXSent || localY != sCoopLastYSent
 				|| localGender != sCoopLastGenderSent || localFacing != sCoopLastFacingSent

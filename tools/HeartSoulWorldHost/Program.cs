@@ -30,7 +30,7 @@ internal sealed class ClientSlot
 
 internal static class Program
 {
-    private const int ProtocolVersion = 8;
+    private const int ProtocolVersion = 9;
     private const uint PeerMagic = 0x4D504C4Bu;
     private const ushort PeerVersion = 1;
     private const int HostSenderId = 2;
@@ -355,15 +355,16 @@ internal static class Program
                 claim[i] = BinaryPrimitives.ReadUInt32BigEndian(payload.AsSpan(i * 4, 4));
 
             // Claim seq lives in the high byte of avatarState (word 7). Drop
-            // exact duplicates and late wraps so a soft resume cannot replay
-            // stale locomotion into the partner phone.
+            // exact duplicates. A large forward jump (delta >= 128) is treated
+            // as a resync — rejecting it permanently locked POSITION until the
+            // next TCP soft-resume cleared HasClaimSeq.
             if (words >= 8)
             {
                 byte claimSeq = (byte)(claim[7] >> 24);
                 if (sender.HasClaimSeq)
                 {
                     byte delta = (byte)(claimSeq - sender.LastClaimSeq);
-                    if (delta == 0 || delta >= 128)
+                    if (delta == 0)
                         return;
                 }
                 sender.LastClaimSeq = claimSeq;
