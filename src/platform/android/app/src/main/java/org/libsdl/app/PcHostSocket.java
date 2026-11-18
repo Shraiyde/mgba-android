@@ -29,6 +29,8 @@ final class PcHostSocket {
         void onUnreachable();
         void onFrame(byte[] encrypted);
         void onHostBusy();
+        /** Connect/handshake progress for the on-screen status HUD (no secrets). */
+        default void onStatus(String detail) {}
     }
 
     private static final int MAX_FRAME = 8192;
@@ -128,10 +130,12 @@ final class PcHostSocket {
             while (wantRun.get()) {
                 Socket s = null;
                 try {
+                    status("Connecting to " + host + ":" + port + "…");
                     s = new Socket();
                     s.setTcpNoDelay(true);
                     s.setKeepAlive(true);
                     s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                    status("TCP up — sending HELLO…");
                     DataOutputStream output = new DataOutputStream(s.getOutputStream());
                     InputStream rawIn = s.getInputStream();
                     output.write((helloLine + "\n").getBytes(StandardCharsets.UTF_8));
@@ -139,8 +143,9 @@ final class PcHostSocket {
 
                     String ready = readLineExact(rawIn);
                     if (ready == null)
-                        throw new IOException("closed before READY");
+                        throw new IOException("host closed before READY");
                     if (ready.startsWith("FULL")) {
+                        status("Host full");
                         Listener busy = listener;
                         if (busy != null)
                             busy.onHostBusy();
@@ -148,7 +153,7 @@ final class PcHostSocket {
                         break;
                     }
                     if (!ready.startsWith("READY "))
-                        throw new IOException("bad handshake");
+                        throw new IOException("unexpected handshake reply");
                     String[] parts = ready.split(" ");
                     int role = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
                     int players = parts.length > 2 ? Integer.parseInt(parts[2]) : 1;
@@ -164,6 +169,7 @@ final class PcHostSocket {
                     Listener l = listener;
                     boolean first = !sessionHandshook;
                     sessionHandshook = true;
+                    status("READY role=" + role + " players=" + players);
                     if (l != null) {
                         if (first)
                             l.onSessionReady(role, players);
@@ -172,15 +178,24 @@ final class PcHostSocket {
 
                     while (wantRun.get()) {
                         int len = input.readInt();
-                        if (len < 16 || len > MAX_FRAME)
+                        // Length-prefixed deframer: reject truncated / oversized
+                        // frames the same way the host does (16..8192).
+                        if (len < 16 || len > MAX_FRAME) {
+                            status("Bad frame length " + len + " — reconnecting");
                             break;
+                        }
                         byte[] frame = new byte[len];
                         input.readFully(frame);
                         Listener recv = listener;
                         if (recv != null)
                             recv.onFrame(frame);
                     }
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    String reason = e.getMessage();
+                    if (reason == null || reason.isEmpty())
+                        reason = e.getClass().getSimpleName();
+                    // Never include HELLO/proof material — only a short reason.
+                    status("Link error: " + reason);
                 } finally {
                     try { if (s != null) s.close(); } catch (Exception ignored) {}
                     synchronized (gate) {
@@ -227,6 +242,12 @@ final class PcHostSocket {
             if (wantRun.get() && loopAlive.compareAndSet(false, true))
                 io.execute(this::runLoop);
         }
+    }
+
+    private void status(String detail) {
+        Listener l = listener;
+        if (l != null)
+            l.onStatus(detail);
     }
 
     private static String readLineExact(InputStream in) throws IOException {

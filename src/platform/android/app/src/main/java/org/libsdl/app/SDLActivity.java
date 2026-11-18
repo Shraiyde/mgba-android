@@ -424,6 +424,8 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         }
 
         setContentView(mLayout);
+        // Persistent co-op link HUD (host + partner). Attach after the layout exists.
+        PeerLinkManager.attachStatusHud(mLayout);
 
         setWindowStyle(false);
 

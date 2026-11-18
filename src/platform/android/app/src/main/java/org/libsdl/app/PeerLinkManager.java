@@ -10,6 +10,7 @@ import android.text.InputFilter;
 import android.text.InputType;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -88,6 +89,8 @@ public final class PeerLinkManager {
     private static final int DIRECT_TIMEOUT_MS = 15000;
     /** No host frame for this long → soft kick the TCP socket (session stays). */
     private static final int PC_DROP_TOLERANCE_MS = 10000;
+    /** Partner POSITION older than this → show Partner: waiting. */
+    private static final int PARTNER_ONLINE_MS = 5000;
 
     private static volatile Activity activity;
     private static volatile Context appContext;
@@ -207,9 +210,47 @@ public final class PeerLinkManager {
     private volatile boolean pcTcpConnected;
     private volatile String lastStatusTitle;
     private volatile boolean pcReconnectToastShown;
+    private final CoopLinkHud linkHud = new CoopLinkHud();
+    private volatile long lastPartnerPositionAt;
+    private volatile int pcReadyPlayers;
+    private final Runnable partnerHudWatchdog = new Runnable() {
+        @Override public void run() {
+            refreshLinkHud();
+            if (pcServerMode && retryEnabled)
+                handler.postDelayed(this, 1000);
+        }
+    };
 
     private synchronized void resetReceiveCounters() {
         receiveCounters[0] = receiveCounters[1] = receiveCounters[2] = 0;
+    }
+
+    /** Attach the persistent co-op status HUD above the SDL surface. */
+    public static void attachStatusHud(ViewGroup layout) {
+        PeerLinkManager manager = instance;
+        Activity current = activity;
+        if (manager == null || current == null || layout == null)
+            return;
+        manager.linkHud.attach(current, layout);
+        manager.refreshLinkHud();
+    }
+
+    private void refreshLinkHud() {
+        CoopLinkHud.HostState state;
+        String detail = "";
+        if (!pcServerMode || !retryEnabled) {
+            state = CoopLinkHud.HostState.OFFLINE;
+        } else if (pcTcpConnected && accepted) {
+            state = CoopLinkHud.HostState.CONNECTED;
+        } else {
+            state = CoopLinkHud.HostState.CONNECTING;
+            if (lastStatusTitle != null)
+                detail = lastStatusTitle;
+        }
+        boolean partner = lastPartnerPositionAt != 0
+            && (System.currentTimeMillis() - lastPartnerPositionAt) < PARTNER_ONLINE_MS;
+        linkHud.setHostState(state, detail);
+        linkHud.setPartnerOnline(partner);
     }
 
     private volatile MqttAsyncClient mqtt;
@@ -277,9 +318,11 @@ public final class PeerLinkManager {
                     manager.sendCounter.set(1);
                     manager.resetReceiveCounters();
                     manager.accepted = true;
+                    manager.pcReadyPlayers = players;
                     manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
                     manager.reopenNativeSession();
                     manager.showStatus("Connected to PC host", "Linked to the PC world host.");
+                    manager.refreshLinkHud();
                 }
                 @Override public void onLinkUp() {
                     manager.pcTcpConnected = true;
@@ -288,18 +331,21 @@ public final class PeerLinkManager {
                     manager.updateNativeConnection();
                     if (manager.accepted)
                         manager.showStatus("Connected to PC host", "Linked to the PC world host.");
+                    manager.refreshLinkHud();
                 }
                 @Override public void onLinkDown() {
                     manager.pcTcpConnected = false;
                     // Keep accepted/sessionKey/native so partner stays visible during soft resume.
                     if (manager.pcServerMode && manager.accepted && manager.retryEnabled)
                         manager.showStatus("Reconnecting…", "Waiting for the PC host…");
+                    manager.refreshLinkHud();
                 }
                 @Override public void onUnreachable() {
                     manager.pcTcpConnected = false;
                     manager.retryEnabled = false;
                     manager.showStatus("PC host unreachable",
                         "Could not reach the PC host. Check ZeroTier and try Join PC Host again.");
+                    manager.refreshLinkHud();
                 }
                 @Override public void onFrame(byte[] encrypted) {
                     manager.lastPcServerHeartbeatAt = System.currentTimeMillis();
@@ -308,6 +354,14 @@ public final class PeerLinkManager {
                 @Override public void onHostBusy() {
                     manager.retryEnabled = false;
                     manager.showStatus("PC host full", "Two phones are already connected.");
+                    manager.refreshLinkHud();
+                }
+                @Override public void onStatus(String detail) {
+                    if (detail == null || detail.isEmpty())
+                        return;
+                    // Drive the persistent HUD; keep toasts deduped via showStatus paths.
+                    if (!manager.pcTcpConnected)
+                        manager.linkHud.setHostState(CoopLinkHud.HostState.CONNECTING, detail);
                 }
             });
         }
@@ -552,7 +606,12 @@ public final class PeerLinkManager {
 
         handler.removeCallbacks(pcServerWatchdog);
         handler.postDelayed(pcServerWatchdog, 1000);
+        handler.removeCallbacks(partnerHudWatchdog);
+        handler.post(partnerHudWatchdog);
+        lastPartnerPositionAt = 0;
+        pcReadyPlayers = 0;
         showStatus("Reconnecting…", "Opening link to the PC host…");
+        refreshLinkHud();
         ensurePcTcpLink();
     }
 
@@ -1505,6 +1564,11 @@ public final class PeerLinkManager {
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(sessionKey, "AES"), new GCMParameterSpec(128, nonce));
             byte[] frame = cipher.doFinal(encrypted);
             receiveCounters[sender] = counter;
+            // Host-stamped POSITION means the partner claim was relayed — mark online.
+            if (pcServerMode && sender == 2 && peerFrameType(frame) == MPEER_MSG_POSITION) {
+                lastPartnerPositionAt = System.currentTimeMillis();
+                refreshLinkHud();
+            }
             nativePeerFrame(frame);
         } catch (Exception ignored) {}
     }
@@ -1697,6 +1761,7 @@ public final class PeerLinkManager {
         handler.removeCallbacks(acceptRetry);
         handler.removeCallbacks(pcHeartbeat);
         handler.removeCallbacks(pcServerWatchdog);
+        handler.removeCallbacks(partnerHudWatchdog);
         handler.removeCallbacks(directTimeout);
         handler.removeCallbacks(directRetry);
         if (host && mqtt != null && mqtt.isConnected() && pin != null && sessionId != null)
@@ -1706,6 +1771,8 @@ public final class PeerLinkManager {
         pcHostAddress = null;
         pcReconnectToastShown = false;
         lastStatusTitle = null;
+        lastPartnerPositionAt = 0;
+        pcReadyPlayers = 0;
         try { if (peerConnection != null) peerConnection.close(); } catch (Exception ignored) {}
         try { if (dataChannel != null) dataChannel.close(); } catch (Exception ignored) {}
         try { if (mqtt != null && mqtt.isConnected()) mqtt.disconnect(); } catch (Exception ignored) {}
@@ -1738,6 +1805,7 @@ public final class PeerLinkManager {
         }
         if (wasConnected)
             nativePeerDisconnected();
+        refreshLinkHud();
     }
 
     private void showStatus(String title, String message) {
@@ -1752,6 +1820,7 @@ public final class PeerLinkManager {
             pcReconnectToastShown = false;
         }
         lastStatusTitle = title;
+        refreshLinkHud();
         Activity current = activity;
         if (current == null)
             return;

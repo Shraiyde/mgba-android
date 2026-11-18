@@ -30,7 +30,7 @@ internal sealed class ClientSlot
 
 internal static class Program
 {
-    private const int ProtocolVersion = 9;
+    private const int ProtocolVersion = 10;
     private const uint PeerMagic = 0x4D504C4Bu;
     private const ushort PeerVersion = 1;
     private const int HostSenderId = 2;
@@ -72,16 +72,19 @@ internal static class Program
 
         string[] zt = CollectAdapterIps("ZeroTier");
 
+        string bakedHost = BuiltinPcHostConfig.Host();
         Console.WriteLine("HEART & SOUL — WORLD HOST");
         Console.WriteLine("=========================");
         Console.WriteLine("Mode:       ZeroTier direct TCP (baked credentials; no PIN / MQTT / TURN)");
         Console.WriteLine("Listen:     TCP *:" + _listenPort + " (all interfaces)");
+        Console.WriteLine("Phones dial: " + bakedHost + ":" + _listenPort + " (baked into APK)");
         Console.WriteLine("Heartbeat:  1s  |  phone soft-resume timeout: 10s");
-        Console.WriteLine("ZeroTier:  " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — is ZeroTier running?)"));
+        Console.WriteLine("ZeroTier:  " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — start ZeroTier or phones cannot reach this PC)"));
         Console.WriteLine("Protocol:  v" + ProtocolVersion);
         Console.WriteLine();
         Console.WriteLine("Phones: Co-op → Join PC Host (one tap — credentials are built into the APK).");
         Console.WriteLine("Both phones must be on Stephen's ZeroTier network.");
+        Console.WriteLine("Every TCP accept / HELLO reject is logged below (no secrets).");
         Console.WriteLine("Press Ctrl+C to stop.");
         Console.WriteLine();
 
@@ -221,6 +224,8 @@ internal static class Program
         string? clientId = null;
         NetworkStream? ownedStream = null;
         ClientSlot? slot = null;
+        string remote = RemoteEndpoint(tcp);
+        Console.WriteLine($"[tcp] accept from {remote}");
         try
         {
             tcp.NoDelay = true;
@@ -228,18 +233,35 @@ internal static class Program
             NetworkStream stream = tcp.GetStream();
             ownedStream = stream;
             string? line = await ReadLineExact(stream, token);
-            if (line == null || !line.StartsWith("HELLO ", StringComparison.Ordinal))
+            if (line == null)
+            {
+                Console.WriteLine($"[tcp] {remote} closed before HELLO");
                 return;
+            }
+            if (!line.StartsWith("HELLO ", StringComparison.Ordinal))
+            {
+                Console.WriteLine($"[tcp] {remote} rejected: expected HELLO, got {SanitizeHandshakePreview(line)}");
+                return;
+            }
             string[] bits = line.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
             if (bits.Length < 3)
+            {
+                Console.WriteLine($"[tcp] {remote} rejected: HELLO missing clientId/proof");
                 return;
+            }
             clientId = bits[1];
             string proof = bits[2];
             if (clientId.Length is < 8 or > 64
                 || clientId.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-'))
+            {
+                Console.WriteLine($"[tcp] {remote} rejected: invalid clientId shape");
                 return;
+            }
             if (!FixedEquals(BuiltinPcHostConfig.HelloProof(clientId), proof))
+            {
+                Console.WriteLine($"[tcp] {remote} id={Short(clientId)} rejected: bad HELLO proof");
                 return;
+            }
 
             NetworkStream? staleStream = null;
             await Gate.WaitAsync(token);
@@ -249,6 +271,7 @@ internal static class Program
                 {
                     if (Clients.Count >= 2)
                     {
+                        Console.WriteLine($"[tcp] {remote} id={Short(clientId)} rejected: room full (2/2)");
                         await stream.WriteAsync(Encoding.UTF8.GetBytes("FULL\n"), token);
                         return;
                     }
@@ -260,7 +283,7 @@ internal static class Program
                         Role = Clients.Count
                     };
                     Clients[clientId] = slot;
-                    Console.WriteLine($"[player] {Short(clientId)} joined ({Clients.Count}/2).");
+                    Console.WriteLine($"[player] {Short(clientId)} joined from {remote} ({Clients.Count}/2) role={slot.Role}");
                 }
                 else
                 {
@@ -275,7 +298,7 @@ internal static class Program
                     // Soft resume may restart claimSeq at the phone; accept the
                     // next claim instead of treating it as a late duplicate.
                     slot.HasClaimSeq = false;
-                    Console.WriteLine($"[player] {Short(clientId)} resumed (replaced stale socket).");
+                    Console.WriteLine($"[player] {Short(clientId)} resumed from {remote} (replaced stale socket)");
                 }
             }
             finally { Gate.Release(); }
@@ -291,6 +314,7 @@ internal static class Program
             string ready = $"READY {slot.Role} {Clients.Count}\n";
             await stream.WriteAsync(Encoding.UTF8.GetBytes(ready), token);
             await stream.FlushAsync(token);
+            Console.WriteLine($"[tcp] {Short(clientId)} READY role={slot.Role} players={Clients.Count}");
             await ForceResyncTo(clientId);
 
             byte[] lenBuf = new byte[4];
@@ -299,7 +323,10 @@ internal static class Program
                 await ReadExact(stream, lenBuf, token);
                 int len = (lenBuf[0] << 24) | (lenBuf[1] << 16) | (lenBuf[2] << 8) | lenBuf[3];
                 if (len is < 16 or > 8192)
+                {
+                    Console.WriteLine($"[tcp] {Short(clientId)} bad frame length {len}; closing");
                     break;
+                }
                 byte[] frame = new byte[len];
                 await ReadExact(stream, frame, token);
                 slot.LastSeenUtc = DateTime.UtcNow;
@@ -307,7 +334,11 @@ internal static class Program
                 await RouteAuthoritativeFrame(clientId, frame);
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            string reason = string.IsNullOrEmpty(ex.Message) ? ex.GetType().Name : ex.Message;
+            Console.WriteLine($"[tcp] {(clientId != null ? Short(clientId) : remote)} error: {reason}");
+        }
         finally
         {
             if (slot != null && ownedStream != null)
@@ -320,8 +351,31 @@ internal static class Program
             }
             if (clientId != null)
                 Console.WriteLine($"[tcp] {Short(clientId)} link down; holding slot.");
+            else
+                Console.WriteLine($"[tcp] {remote} closed without a session.");
             try { tcp.Dispose(); } catch { }
         }
+    }
+
+    private static string RemoteEndpoint(TcpClient tcp)
+    {
+        try
+        {
+            if (tcp.Client.RemoteEndPoint is IPEndPoint ep)
+                return ep.Address + ":" + ep.Port;
+        }
+        catch { }
+        return "unknown";
+    }
+
+    private static string SanitizeHandshakePreview(string line)
+    {
+        // Never echo proofs/secrets — only the first token and length.
+        string[] bits = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        string head = bits.Length > 0 ? bits[0] : "(empty)";
+        if (head.Length > 24)
+            head = head[..24] + "…";
+        return head + " (len=" + line.Length + ")";
     }
 
     private static async Task RouteAuthoritativeFrame(string senderId, byte[] encryptedClaim)
