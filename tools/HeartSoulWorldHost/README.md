@@ -1,26 +1,30 @@
-# Heart & Soul — World Host (Windows)
+# Heart & Soul — World Host
 
-**ZeroTier Minecraft-server model.** The PC listens for **plain TCP** from both
-phones on **all interfaces**. Credentials (host address, port, shared auth
-secret) are **baked into this EXE and the Android APK** — phones type nothing.
+**Online Minecraft-server model.** Phones dial a public TCP host (Fly.io) with
+credentials **baked into the APK and this host** — no PIN, no address typing.
 
-No MQTT, no WebRTC, no TURN, no UPnP, no PIN entry.
+No MQTT, no WebRTC, no TURN, no UPnP, no ZeroTier required on phones.
 
-## Quick start (Stephen)
+## Quick start (phones / Petra)
 
-1. Leave **ZeroTier** connected (expect `10.137.178.161`).
-2. Unzip the release and run `Start-WorldHost.bat`.
-3. Approve the **Windows Firewall** UAC prompt once if asked.
-4. On each phone: Co-op → **Join PC Host** (one tap).
+1. Install the latest co-op APK.
+2. Heart & Soul → Co-op → **Join Online** (one tap).
+3. Wait a few seconds if the host was idle (cold start ~2–3 s).
 
-Status on phones: `Connected to PC host` or `Reconnecting…`.
+Status on phones: `Connected to host` / `Reconnecting…`, plus the persistent HUD.
 
-## Petra — phone ZeroTier setup
+## Optional — Windows host (offline / LAN)
 
-1. Install **ZeroTier One** (Play Store).
-2. **Join Network** using Stephen’s ZeroTier network ID.
-3. Keep ZeroTier on while playing.
-4. Heart & Soul → Co-op → **Join PC Host** (one tap — no PIN, no address).
+Still useful if you want a local host instead of the online one (requires matching
+baked address in that build):
+
+1. Unzip the release and run `Start-WorldHost.bat`.
+2. Approve the **Windows Firewall** UAC prompt once if asked.
+
+## Fly.io (Stephen)
+
+- App: `heartsoul-host` (`fly.toml`), region `fra`, raw TCP `27770`.
+- Build/run via `Dockerfile`. Redeploy from Stephen’s side — agents do not deploy.
 
 ## Build
 

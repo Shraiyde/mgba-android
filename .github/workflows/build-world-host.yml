@@ -53,5 +53,5 @@ jobs:
             --repo "${{ github.repository }}" `
             --target "${{ github.sha }}" `
             --title "Heart & Soul World Host ${{ github.run_number }}" `
-            --notes "Windows x64 ZeroTier world host. Unzip, run Start-WorldHost.bat (approve firewall UAC once). Phones on same ZeroTier network: Co-op → Join PC Host (one tap; credentials baked into APK). Plain TCP only — no PIN/MQTT/TURN/UPnP/relay." `
+            --notes "Windows x64 World Host zip (optional offline/LAN). Unzip, run Start-WorldHost.bat (approve firewall UAC once). Primary path is the Fly.io online host; phones: Co-op → Join Online (one tap; credentials baked into APK). Plain TCP only — no PIN/MQTT/TURN/UPnP/relay." `
             --latest=false

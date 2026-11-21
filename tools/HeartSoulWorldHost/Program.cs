@@ -10,7 +10,7 @@ using System.Text;
 namespace HeartSoulWorldHost;
 
 /// <summary>
-/// ZeroTier Minecraft-style world host: phones one-tap join with baked credentials.
+/// Online Minecraft-style world host: phones one-tap join with baked credentials.
 /// No MQTT, WebRTC, TURN, UPnP, PIN entry, or relay. Shared secret never logged.
 /// </summary>
 internal sealed class ClientSlot
@@ -68,22 +68,27 @@ internal static class Program
         }
 
         _sessionKey = BuiltinPcHostConfig.SessionKey();
-        EnsureFirewallRule(_listenPort);
-
-        string[] zt = CollectAdapterIps("ZeroTier");
+        if (OperatingSystem.IsWindows())
+            EnsureFirewallRule(_listenPort);
 
         string bakedHost = BuiltinPcHostConfig.Host();
         Console.WriteLine("HEART & SOUL — WORLD HOST");
         Console.WriteLine("=========================");
-        Console.WriteLine("Mode:       ZeroTier direct TCP (baked credentials; no PIN / MQTT / TURN)");
+        Console.WriteLine("Mode:       Online direct TCP (baked credentials; no PIN / MQTT / TURN)");
         Console.WriteLine("Listen:     TCP *:" + _listenPort + " (all interfaces)");
         Console.WriteLine("Phones dial: " + bakedHost + ":" + _listenPort + " (baked into APK)");
         Console.WriteLine("Heartbeat:  1s  |  phone soft-resume timeout: 10s");
-        Console.WriteLine("ZeroTier:  " + (zt.Length > 0 ? string.Join(", ", zt) : "(not detected — start ZeroTier or phones cannot reach this PC)"));
+        if (OperatingSystem.IsWindows())
+        {
+            string[] zt = CollectAdapterIps("ZeroTier");
+            Console.WriteLine("ZeroTier:  " + (zt.Length > 0
+                ? string.Join(", ", zt)
+                : "(optional — online phones dial the public host; ZT only for local LAN testing)"));
+        }
         Console.WriteLine("Protocol:  v" + ProtocolVersion);
         Console.WriteLine();
-        Console.WriteLine("Phones: Co-op → Join PC Host (one tap — credentials are built into the APK).");
-        Console.WriteLine("Both phones must be on Stephen's ZeroTier network.");
+        Console.WriteLine("Phones: Co-op → Join Online (one tap — credentials are built into the APK).");
+        Console.WriteLine("Phones connect to the online host over the public internet (no ZeroTier required).");
         Console.WriteLine("Every TCP accept / HELLO reject is logged below (no secrets).");
         Console.WriteLine("Press Ctrl+C to stop.");
         Console.WriteLine();

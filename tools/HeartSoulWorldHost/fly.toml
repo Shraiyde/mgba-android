@@ -1,0 +1,21 @@
+# Fly.io app for the public World Host (Frankfurt). Deploy from Stephen's side.
+app = "heartsoul-host"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 27770
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 27770
+    handlers = []
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

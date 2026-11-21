@@ -1,36 +1,41 @@
-# Co-op World Host (ZeroTier)
+# Co-op World Host (online)
 
-Stephen’s network: **no router login, no UPnP, inbound ports closed**. The PC
-runs **ZeroTier** (`10.137.178.161`). Phones join that network and connect
-**directly** — credentials are **built into the APK and the host** (obfuscated
-shared secret; never logged).
+Phones connect **directly** over public TCP to the World Host (Fly.io Frankfurt).
+Credentials are **built into the APK and the host** (obfuscated shared secret;
+never logged). No ZeroTier on phones.
 
 ```
 Phone A ──TCP──┐
-               ├── HeartSoulWorldHost.exe  (TCP fixed port, all interfaces)  ← SoT
+               ├── HeartSoulWorldHost  (TCP :27770)  ← SoT
 Phone B ──TCP──┘
-         ZeroTier
+         public internet (Fly.io)
 ```
 
 ## Hard rules
 
 - **No MQTT**, **no WebRTC**, **no TURN**, **no relay**, **no UPnP**.
-- **No PIN / address typing** on phones — one tap **Join PC Host**.
+- **No PIN / address typing** on phones — one tap **Join Online**.
 - Host address, port, and shared auth secret are baked into APK + host.
-- Status: **Connected to PC host** / **Reconnecting…** (once each) / **PC host unreachable** (terminal).
+- Status: **Connected to host** / **Reconnecting…** (once each) / **Host unreachable** (terminal).
+- Persistent HUD: Host offline / connecting / connected + Partner waiting / online.
 - One persistent TCP link with **1 s** host heartbeats and **10 s** soft-resume tolerance.
+- First TCP connect timeout is **8 s** (covers ~2–3 s Fly cold starts).
 - Reconnect uses backoff; never flaps; never opens a second socket while linked.
 - Host replaces a stale socket for the same phone instead of kicking both.
 
-## Petra — ZeroTier on the phone
+## Petra — phone
 
-1. Install **ZeroTier One** (Play Store).
-2. **Join Network** with Stephen’s ZeroTier network ID.
-3. Keep ZeroTier connected while playing.
-4. Open Heart & Soul → Co-op → **Join PC Host** (one tap).
+1. Install the latest co-op APK.
+2. Open Heart & Soul → Co-op → **Join Online** (one tap).
+3. If the host was idle, wait a few seconds for cold start.
 
-## Stephen — PC host
+## Stephen — online host (Fly)
 
-1. Keep ZeroTier connected.
-2. Run `Start-WorldHost.bat`. Approve the one-time Windows Firewall UAC if prompted.
-3. Leave the console open. Phones need no PIN.
+1. App `heartsoul-host` in `tools/HeartSoulWorldHost/fly.toml` (region `fra`).
+2. Redeploy from Stephen’s side when the host binary changes.
+3. Dedicated IPv4 + raw TCP port **27770** (same port as before).
+
+## Optional — Windows host zip
+
+`Start-WorldHost.bat` still builds for offline/LAN testing. Firewall UAC is
+Windows-only; Linux/Fly skips it.

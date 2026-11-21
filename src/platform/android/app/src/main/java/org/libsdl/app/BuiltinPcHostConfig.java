@@ -6,7 +6,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Baked ZeroTier PC host endpoint + shared auth secret (XOR-obfuscated).
+ * Baked online World Host endpoint + shared auth secret (XOR-obfuscated).
  * Never log decoded secret material.
  */
 final class BuiltinPcHostConfig {
@@ -18,9 +18,10 @@ final class BuiltinPcHostConfig {
         (byte) 0x0D, (byte) 0x9F, (byte) 0x52, (byte) 0xC8, (byte) 0x17, (byte) 0xE1, (byte) 0x4A, (byte) 0x76
     };
 
+    // 137.66.28.191
     private static final byte[] HOST_ENC = {
-        (byte) 0x96, (byte) 0x0C, (byte) 0xBF, (byte) 0x6F, (byte) 0x1B, (byte) 0xC3, (byte) 0x45, (byte) 0xE1,
-        (byte) 0x2E, (byte) 0xFA, (byte) 0x51, (byte) 0x75, (byte) 0xDE, (byte) 0x02
+        (byte) 0x96, (byte) 0x0F, (byte) 0xA6, (byte) 0x70, (byte) 0x1E, (byte) 0xC2, (byte) 0x45, (byte) 0xE2,
+        (byte) 0x21, (byte) 0xEC, (byte) 0x4E, (byte) 0x7D, (byte) 0xD9
     };
     private static final byte[] PORT_ENC = {
         (byte) 0x95, (byte) 0x0B, (byte) 0xA6, (byte) 0x69, (byte) 0x18
